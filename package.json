@@ -1,6 +1,6 @@
 {
   "name": "note-mcp-server",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "description": "MCP server for interacting with note.com API",
   "type": "module",
   "main": "build/note-mcp-server.js",
@@ -16,7 +16,9 @@
     "dev:ts": "node --loader ts-node/esm --experimental-specifier-resolution=node --project tsconfig-dev.json src/note-mcp-server-refactored.ts",
     "dev:http:ts": "node --loader ts-node/esm --experimental-specifier-resolution=node --project tsconfig-dev.json src/note-mcp-server-http.ts",
     "capture:session": "node scripts/capture-session-playwright.js",
-    "capture:session:puppeteer": "node scripts/capture-session.js"
+    "capture:session:puppeteer": "node scripts/capture-session.js",
+    "image:insert": "node scripts/final-image-insert.mjs",
+    "image:insert:check": "node --check scripts/final-image-insert.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.7.0",

@@ -5,6 +5,8 @@ import { registerUserTools } from "./user-tools.js";
 import { registerMembershipTools } from "./membership-tools.js";
 import { registerMagazineTools } from "./magazine-tools.js";
 import { registerImageTools } from "./image-tools.js";
+import { registerObsidianTools } from "./obsidian-tools.js";
+import { registerPublishTools } from "./publish-tools.js";
 
 /**
  * すべてのツールをMCPサーバーに登録する
@@ -18,4 +20,6 @@ export function registerAllTools(server: McpServer): void {
   registerMembershipTools(server);
   registerMagazineTools(server);
   registerImageTools(server);
+  registerObsidianTools(server);
+  registerPublishTools(server);
 }

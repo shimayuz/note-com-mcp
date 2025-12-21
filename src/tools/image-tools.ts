@@ -4,6 +4,7 @@ import { noteApiRequest } from "../utils/api-client.js";
 import { hasAuth } from "../utils/auth.js";
 import fs from "fs";
 import path from "path";
+import { chromium } from "playwright";
 
 /**
  * 画像関連のツールを登録する
@@ -12,10 +13,13 @@ import path from "path";
 export function registerImageTools(server: McpServer): void {
     /**
      * 画像をアップロードするツール
+     * 注意: このツールはnote.comのS3に画像をアップロードしますが、
+     * 本文中に画像を挿入するには publish-from-obsidian または insert-images-to-note ツールを使用してください。
+     * note.comのAPIは本文中の<img>タグをサニタイズするため、APIだけでは本文画像挿入ができません。
      */
     server.tool(
         "upload-image",
-        "note.comに画像をアップロード（記事に使用可能な画像URLを取得）",
+        "note.comに画像をアップロード（アイキャッチ画像用。本文画像は publish-from-obsidian を使用）",
         {
             imagePath: z.string().optional().describe("アップロードする画像ファイルのパス"),
             imageUrl: z.string().optional().describe("アップロードする画像のURL（imagePathの代わりに使用可能）"),
@@ -120,50 +124,90 @@ export function registerImageTools(server: McpServer): void {
                     throw new Error('imagePath、imageUrl、またはimageBase64のいずれかを指定してください');
                 }
 
-                // FormDataの構築（multipart/form-data）
-                const boundary = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
-                const formDataParts: Buffer[] = [];
+                // Step 1: Presigned URLを取得（filenameのみ送信）
+                const boundary1 = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
+                const presignFormParts: Buffer[] = [];
 
-                // 画像ファイルパート
-                formDataParts.push(Buffer.from(
-                    `--${boundary}\r\n` +
-                    `Content-Disposition: form-data; name="image"; filename="${fileName}"\r\n` +
-                    `Content-Type: ${mimeType}\r\n\r\n`
+                // ファイル名パートのみ（ブラウザと同じ形式）
+                presignFormParts.push(Buffer.from(
+                    `--${boundary1}\r\n` +
+                    `Content-Disposition: form-data; name="filename"\r\n\r\n` +
+                    `${fileName}\r\n`
                 ));
-                formDataParts.push(imageBuffer);
-                formDataParts.push(Buffer.from('\r\n'));
 
                 // 終了境界
-                formDataParts.push(Buffer.from(`--${boundary}--\r\n`));
+                presignFormParts.push(Buffer.from(`--${boundary1}--\r\n`));
 
-                // FormDataを結合
-                const formData = Buffer.concat(formDataParts);
+                const presignFormData = Buffer.concat(presignFormParts);
 
-                // note APIにアップロード
-                const data = await noteApiRequest(
-                    '/api/v1/upload_image',
+                // Presigned URL APIを呼び出し（API_BASE_URLが/apiを含むため、/v3から開始）
+                const presignResponse = await noteApiRequest(
+                    '/v3/images/upload/presigned_post',
                     'POST',
-                    formData,
+                    presignFormData,
                     true,
                     {
-                        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-                        'Content-Length': formData.length.toString()
+                        'Content-Type': `multipart/form-data; boundary=${boundary1}`,
+                        'Content-Length': presignFormData.length.toString(),
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Referer': 'https://editor.note.com/'
                     }
                 );
 
-                // レスポンスから画像URLを取得（複数のパターンに対応）
-                let uploadedImageUrl: string | undefined;
-                if (data.data && typeof data.data === 'object') {
-                    uploadedImageUrl = data.data.url || data.data.image_url || data.data.imageUrl;
-                }
-                if (!uploadedImageUrl) {
-                    uploadedImageUrl = data.url || data.image_url || data.imageUrl;
+                if (!presignResponse.data || !presignResponse.data.post) {
+                    console.error("Presigned URLの取得に失敗:", JSON.stringify(presignResponse));
+                    throw new Error("Presigned URLの取得に失敗しました");
                 }
 
-                if (!uploadedImageUrl) {
-                    console.error("画像URLがレスポンスに含まれていません:", JSON.stringify(data));
-                    throw new Error("画像のアップロードは成功しましたが、画像URLを取得できませんでした");
+                const { url: finalImageUrl, action: s3Url, post: s3Params } = presignResponse.data;
+
+                // Step 2: S3に直接アップロード
+                const boundary2 = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
+                const s3FormParts: Buffer[] = [];
+
+                // S3パラメータを追加（順序が重要）
+                const paramOrder = ['key', 'acl', 'Expires', 'policy', 'x-amz-credential', 'x-amz-algorithm', 'x-amz-date', 'x-amz-signature'];
+                for (const key of paramOrder) {
+                    if (s3Params[key]) {
+                        s3FormParts.push(Buffer.from(
+                            `--${boundary2}\r\n` +
+                            `Content-Disposition: form-data; name="${key}"\r\n\r\n` +
+                            `${s3Params[key]}\r\n`
+                        ));
+                    }
                 }
+
+                // ファイルパート（最後に追加）
+                s3FormParts.push(Buffer.from(
+                    `--${boundary2}\r\n` +
+                    `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
+                    `Content-Type: ${mimeType}\r\n\r\n`
+                ));
+                s3FormParts.push(imageBuffer);
+                s3FormParts.push(Buffer.from('\r\n'));
+
+                // 終了境界
+                s3FormParts.push(Buffer.from(`--${boundary2}--\r\n`));
+
+                const s3FormData = Buffer.concat(s3FormParts);
+
+                // S3にアップロード
+                const s3Response = await fetch(s3Url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': `multipart/form-data; boundary=${boundary2}`,
+                        'Content-Length': s3FormData.length.toString()
+                    },
+                    body: s3FormData
+                });
+
+                if (!s3Response.ok && s3Response.status !== 204) {
+                    const errorText = await s3Response.text();
+                    console.error("S3アップロードエラー:", s3Response.status, errorText);
+                    throw new Error(`S3へのアップロードに失敗しました: ${s3Response.status}`);
+                }
+
+                const uploadedImageUrl = finalImageUrl;
 
                 return {
                     content: [
@@ -179,7 +223,7 @@ export function registerImageTools(server: McpServer): void {
                                 mimeType: mimeType,
                                 // デバッグ用に元のレスポンスも含める
                                 _debug: {
-                                    apiResponse: data
+                                    presignResponse: presignResponse
                                 }
                             }, null, 2)
                         }
@@ -275,44 +319,76 @@ export function registerImageTools(server: McpServer): void {
                         continue;
                     }
 
-                    // FormDataの構築
-                    const boundary = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
-                    const formDataParts: Buffer[] = [];
+                    // Step 1: Presigned URLを取得（filenameのみ送信）
+                    const boundary1 = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
+                    const presignFormParts: Buffer[] = [];
 
-                    formDataParts.push(Buffer.from(
-                        `--${boundary}\r\n` +
-                        `Content-Disposition: form-data; name="image"; filename="${fileName}"\r\n` +
-                        `Content-Type: ${mimeType}\r\n\r\n`
+                    // ファイル名パートのみ（ブラウザと同じ形式）
+                    presignFormParts.push(Buffer.from(
+                        `--${boundary1}\r\n` +
+                        `Content-Disposition: form-data; name="filename"\r\n\r\n` +
+                        `${fileName}\r\n`
                     ));
-                    formDataParts.push(imageBuffer);
-                    formDataParts.push(Buffer.from('\r\n'));
-                    formDataParts.push(Buffer.from(`--${boundary}--\r\n`));
+                    presignFormParts.push(Buffer.from(`--${boundary1}--\r\n`));
 
-                    const formData = Buffer.concat(formDataParts);
+                    const presignFormData = Buffer.concat(presignFormParts);
 
-                    // note APIにアップロード
-                    const data = await noteApiRequest(
-                        '/api/v1/upload_image',
+                    const presignResponse = await noteApiRequest(
+                        '/v3/images/upload/presigned_post',
                         'POST',
-                        formData,
+                        presignFormData,
                         true,
                         {
-                            'Content-Type': `multipart/form-data; boundary=${boundary}`,
-                            'Content-Length': formData.length.toString()
+                            'Content-Type': `multipart/form-data; boundary=${boundary1}`,
+                            'Content-Length': presignFormData.length.toString(),
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'Referer': 'https://editor.note.com/'
                         }
                     );
 
-                    // レスポンスから画像URLを取得
-                    let uploadedImageUrl: string | undefined;
-                    if (data.data && typeof data.data === 'object') {
-                        uploadedImageUrl = data.data.url || data.data.image_url || data.data.imageUrl;
-                    }
-                    if (!uploadedImageUrl) {
-                        uploadedImageUrl = data.url || data.image_url || data.imageUrl;
+                    if (!presignResponse.data || !presignResponse.data.post) {
+                        throw new Error("Presigned URLの取得に失敗しました");
                     }
 
-                    if (!uploadedImageUrl) {
-                        throw new Error("画像URLを取得できませんでした");
+                    const { url: uploadedImageUrl, action: s3Url, post: s3Params } = presignResponse.data;
+
+                    // Step 2: S3に直接アップロード
+                    const boundary2 = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
+                    const s3FormParts: Buffer[] = [];
+
+                    const paramOrder = ['key', 'acl', 'Expires', 'policy', 'x-amz-credential', 'x-amz-algorithm', 'x-amz-date', 'x-amz-signature'];
+                    for (const key of paramOrder) {
+                        if (s3Params[key]) {
+                            s3FormParts.push(Buffer.from(
+                                `--${boundary2}\r\n` +
+                                `Content-Disposition: form-data; name="${key}"\r\n\r\n` +
+                                `${s3Params[key]}\r\n`
+                            ));
+                        }
+                    }
+
+                    s3FormParts.push(Buffer.from(
+                        `--${boundary2}\r\n` +
+                        `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
+                        `Content-Type: ${mimeType}\r\n\r\n`
+                    ));
+                    s3FormParts.push(imageBuffer);
+                    s3FormParts.push(Buffer.from('\r\n'));
+                    s3FormParts.push(Buffer.from(`--${boundary2}--\r\n`));
+
+                    const s3FormData = Buffer.concat(s3FormParts);
+
+                    const s3Response = await fetch(s3Url, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': `multipart/form-data; boundary=${boundary2}`,
+                            'Content-Length': s3FormData.length.toString()
+                        },
+                        body: s3FormData
+                    });
+
+                    if (!s3Response.ok && s3Response.status !== 204) {
+                        throw new Error(`S3へのアップロードに失敗しました: ${s3Response.status}`);
                     }
 
                     results.push({

@@ -25,13 +25,19 @@ export function formatNote(
   const price = note.price || 0;
   const isPaid = price > 0;
 
+  // eyecatchUrlを常に含める（複数のフィールド名に対応）
+  const eyecatchUrl = note.eyecatch || note.sp_eyecatch || note.eyecatch_url || note.eyecatchUrl || note.thumbnail || null;
+
+  // publishedAtを複数のフィールド名から取得
+  const publishedAt = note.publishAt || note.publish_at || note.published_at || note.createdAt || note.created_at || '日付不明';
+
   return {
     id: note.id || "",
     key: note.key || "",
     title: note.name || "",
     body: note.body || note.noteDraft?.body || "",
     excerpt: note.body ? (note.body.length > 100 ? note.body.substring(0, 100) + '...' : note.body) : '本文なし',
-    publishedAt: note.publishAt || note.publish_at || '日付不明',
+    publishedAt,
     likesCount: note.likeCount || note.like_count || 0,
     commentsCount: note.commentsCount || note.comment_count || 0,
     user: username || user.nickname || "",
@@ -43,18 +49,26 @@ export function formatNote(
     hasDraftContent: Boolean(note.noteDraft),
     lastUpdated: note.noteDraft?.updatedAt || note.createdAt || "",
 
-    // コンテンツ分析情報（オプション）
-    contentAnalysis: analyzeContent ? {
+    // eyecatchUrlを常に含める
+    eyecatchUrl,
+
+    // コンテンツ分析情報（常に含める、analyzeContent=trueの場合は詳細情報も追加）
+    contentAnalysis: {
       hasEyecatch,
-      eyecatchUrl: note.eyecatch || note.sp_eyecatch || null,
+      eyecatchUrl,
       imageCount,
       hasVideo: note.type === "MovieNote" || Boolean(note.external_url),
       externalUrl: note.external_url || null,
       excerpt: note.body ? (note.body.length > 150 ? note.body.substring(0, 150) + '...' : note.body) : '',
       hasAudio: Boolean(note.audio),
       format: note.format || "unknown",
-      highlightText: note.highlight || null
-    } : undefined,
+      highlightText: note.highlight || null,
+      // 追加の詳細情報（analyzeContent=trueの場合のみ）
+      ...(analyzeContent ? {
+        bodyLength: note.body?.length || 0,
+        wordCount: note.body ? note.body.split(/\s+/).length : 0
+      } : {})
+    },
 
     // 価格情報
     price,

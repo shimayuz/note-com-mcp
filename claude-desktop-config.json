@@ -1,7 +1,7 @@
 {
     "mcpServers": {
         "note-api": {
-            "url": "http://127.0.0.1:3001/sse",
+            "url": "https://mcp-note.composition2940.com/mcp",
             "transport": "sse"
         }
     }

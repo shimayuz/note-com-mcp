@@ -83,7 +83,13 @@ export function registerSearchTools(server: McpServer) {
         if (dateRange) params.append("date_range", dateRange);
         if (priceRange !== "all") params.append("price", priceRange);
 
-        const data = await noteApiRequest(`/v3/searches?context=note&${params.toString()}`);
+        // 認証が必要なエンドポイントのため、requireAuth を true に設定
+        const data = await noteApiRequest(
+          `/v3/searches?context=note&${params.toString()}`,
+          "GET",
+          null,
+          true
+        );
         
         if (env.DEBUG) {
           console.error(`API Response structure for analyze-notes: ${JSON.stringify(data, null, 2)}`);

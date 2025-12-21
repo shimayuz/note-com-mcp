@@ -52,7 +52,7 @@ export async function loginToNote(): Promise<boolean> {
     if (env.DEBUG) {
       console.error(`Attempting login to ${loginUrl}`);
     }
-    
+
     const response = await fetch(loginUrl, {
       method: "POST",
       headers: {
@@ -110,23 +110,23 @@ export async function loginToNote(): Promise<boolean> {
         }
       });
     }
-    
+
     const responseXsrfToken = response.headers.get("x-xsrf-token");
     if (responseXsrfToken) {
-        activeXsrfToken = decodeURIComponent(responseXsrfToken);
-        if (env.DEBUG) console.error("XSRF Token from header:", activeXsrfToken);
+      activeXsrfToken = decodeURIComponent(responseXsrfToken);
+      if (env.DEBUG) console.error("XSRF Token from header:", activeXsrfToken);
     } else if (env.DEBUG && !activeXsrfToken) {
-        console.error("XSRF Token not found in initial login headers.");
+      console.error("XSRF Token not found in initial login headers.");
     }
-    
+
     if (!activeSessionCookie) {
       console.error("Login succeeded but session cookie was not found.");
       return false;
     }
-    
+
     // console.error(`>>> Before 'Login successful' log: activeSessionCookie = ${activeSessionCookie}`);
     console.error("Login successful. Session cookie obtained.");
-    
+
     // セッションクッキーが取得できたら、current_userリクエストでXSRFトークンを取得する
     // console.error(`>>> Checking condition for current_user API call: activeSessionCookie=${!!activeSessionCookie}, activeXsrfToken=${!!activeXsrfToken}`);
     if (activeSessionCookie && !activeXsrfToken) {
@@ -140,7 +140,7 @@ export async function loginToNote(): Promise<boolean> {
             "Cookie": activeSessionCookie
           },
         });
-        
+
         // XSRFトークンをヘッダーから取得
         const xsrfToken = currentUserResponse.headers.get("x-xsrf-token");
         if (xsrfToken) {
@@ -154,14 +154,14 @@ export async function loginToNote(): Promise<boolean> {
           if (currentUserSetCookieHeader) {
             const cookies = Array.isArray(currentUserSetCookieHeader) ? currentUserSetCookieHeader : [currentUserSetCookieHeader];
             cookies.forEach(cookieStr => {
-              if (cookieStr.includes("XSRF-TOKEN=")) { 
+              if (cookieStr.includes("XSRF-TOKEN=")) {
                 activeXsrfToken = decodeURIComponent(cookieStr.split(';')[0].split('=')[1]);
                 console.error("XSRF token found in current_user response cookies.");
                 if (env.DEBUG) console.error("XSRF Token from cookie:", activeXsrfToken);
               }
             });
           }
-          
+
           // activeXsrfToken がここでセットされていれば、後続の処理に進む
         }
       } catch (error) {
@@ -177,12 +177,12 @@ export async function loginToNote(): Promise<boolean> {
     // Login success is primarily based on session cookie and XSRF token.
     // preview_access_token will be fetched by a dedicated function when needed.
     if (activeSessionCookie && activeXsrfToken) {
-        console.error("Session cookie and XSRF token successfully obtained/confirmed.");
+      console.error("Session cookie and XSRF token successfully obtained/confirmed.");
     } else if (activeSessionCookie) {
-        console.warn("Session cookie obtained, but XSRF token is missing. Further operations might fail.");
+      console.warn("Session cookie obtained, but XSRF token is missing. Further operations might fail.");
     } else {
-        console.error("Failed to obtain session cookie. Login is considered unsuccessful.");
-        return false; // Explicitly return false if session cookie is not obtained
+      console.error("Failed to obtain session cookie. Login is considered unsuccessful.");
+      return false; // Explicitly return false if session cookie is not obtained
     }
 
     return activeSessionCookie !== null;
@@ -197,8 +197,15 @@ export function buildAuthHeaders(): { [key: string]: string } {
   const headers: { [key: string]: string } = {};
   const cookies = [];
 
-  // すべてのCookieを使用（参照記事の方式）
-  if (process.env.NOTE_ALL_COOKIES) {
+  // 動的に取得したCookieがある場合は優先
+  if (activeSessionCookie) {
+    cookies.push(activeSessionCookie);
+    if (env.DEBUG) console.error("Using dynamically obtained session cookie for Cookie header");
+    if (cookies.length > 0) {
+      headers["Cookie"] = cookies.join("; ");
+    }
+  } else if (process.env.NOTE_ALL_COOKIES) {
+    // すべてのCookieを使用（参照記事の方式）
     // XSRF-TOKENはヘッダーで送るのでCookieからは除外
     const cookiesWithoutXsrf = process.env.NOTE_ALL_COOKIES
       .split('; ')
@@ -206,29 +213,23 @@ export function buildAuthHeaders(): { [key: string]: string } {
       .join('; ');
     headers["Cookie"] = cookiesWithoutXsrf;
     if (env.DEBUG) console.error("Using all cookies from .env file for Cookie header (XSRF-TOKEN excluded)");
-  } else {
-    // セッションCookieの設定（従来の方式）
-    if (env.NOTE_SESSION_V5) {
-      cookies.push(`_note_session_v5=${env.NOTE_SESSION_V5}`);
-      if (env.DEBUG) console.error("Using session cookie from .env file for Cookie header");
-    } else if (activeSessionCookie) {
-      cookies.push(activeSessionCookie);
-      if (env.DEBUG) console.error("Using dynamically obtained session cookie for Cookie header");
-    }
-
+  } else if (env.NOTE_SESSION_V5) {
+    // .envファイルのセッションCookieを使用
+    cookies.push(`_note_session_v5=${env.NOTE_SESSION_V5}`);
+    if (env.DEBUG) console.error("Using session cookie from .env file for Cookie header");
     if (cookies.length > 0) {
       headers["Cookie"] = cookies.join("; ");
     }
   }
 
   // XSRFトークンの設定 (ヘッダー用)
-  // 環境変数を優先し、なければ動的に取得したものを利用
-  if (env.NOTE_XSRF_TOKEN) {
-    headers["X-XSRF-TOKEN"] = env.NOTE_XSRF_TOKEN;
-    if (env.DEBUG) console.error("Using XSRF token from .env file for X-XSRF-TOKEN header");
-  } else if (activeXsrfToken) {
+  // 動的に取得したトークンを優先（ログインで取得した新しいトークンを使用）
+  if (activeXsrfToken) {
     headers["X-XSRF-TOKEN"] = activeXsrfToken;
     if (env.DEBUG) console.error("Using dynamically obtained XSRF token for X-XSRF-TOKEN header");
+  } else if (env.NOTE_XSRF_TOKEN) {
+    headers["X-XSRF-TOKEN"] = env.NOTE_XSRF_TOKEN;
+    if (env.DEBUG) console.error("Using XSRF token from .env file for X-XSRF-TOKEN header");
   }
 
   // User-Agentは常に設定

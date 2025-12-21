@@ -1,0 +1,15 @@
+#!/usr/bin/env node
+const { spawn } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+
+// publisher.jsを実行
+const publisherPath = path.join(__dirname, '../src/publisher.js');
+const child = spawn('node', [publisherPath, ...process.argv.slice(2)], {
+    stdio: 'inherit',
+    cwd: process.cwd()
+});
+
+child.on('exit', (code) => {
+    process.exit(code);
+});

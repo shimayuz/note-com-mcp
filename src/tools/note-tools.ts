@@ -39,7 +39,17 @@ export function registerNoteTools(server: McpServer) {
         );
 
         const noteData = data.data || {};
-        const formattedNote = formatNote(noteData);
+
+        // デバッグ用にAPIレスポンスをログ出力
+        console.log('Raw API response from note-tools:', JSON.stringify(noteData, null, 2));
+
+        // formatNote関数を使って完全なレスポンスを生成
+        const formattedNote = formatNote(
+          noteData,
+          noteData.user?.urlname || '',
+          true, // includeUserDetails
+          true  // analyzeContent
+        );
 
         return createSuccessResponse(formattedNote);
       } catch (error) {

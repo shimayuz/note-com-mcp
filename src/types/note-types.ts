@@ -57,6 +57,8 @@ export interface FormattedNote {
   editUrl?: string;
   hasDraftContent?: boolean;
   lastUpdated?: string;
+  // eyecatchUrlをトップレベルで常に含める
+  eyecatchUrl?: string | null;
   // コンテンツ分析情報
   contentAnalysis?: {
     hasEyecatch: boolean;
@@ -68,6 +70,9 @@ export interface FormattedNote {
     hasAudio: boolean;
     format: string;
     highlightText: string | null;
+    // 追加の詳細情報（analyzeContent=trueの場合）
+    bodyLength?: number;
+    wordCount?: number;
   };
   // 価格情報
   price?: number;

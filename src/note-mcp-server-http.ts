@@ -2,13 +2,21 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import http from "http";
+import type { IncomingHttpHeaders } from "http";
+import fs from "fs";
+import path from "path";
+import os from "os";
+import { chromium } from "playwright";
 
 // 設定とユーティリティ
 import { env, authStatus } from "./config/environment.js";
-import { loginToNote } from "./utils/auth.js";
+import { loginToNote, getActiveSessionCookie } from "./utils/auth.js";
 import { noteApiRequest } from "./utils/api-client.js";
 import { buildAuthHeaders, hasAuth } from "./utils/auth.js";
 import { convertMarkdownToNoteHtml } from "./utils/markdown-converter.js";
+import { refreshSessionWithPlaywright, getStorageStatePath, hasStorageState } from "./utils/playwright-session.js";
+import { formatNote } from "./utils/formatters.js";
+import { parseMarkdown, formatToNoteEditor } from "./utils/note-editor-formatter.js";
 
 // ツールとプロンプトの登録
 import { registerAllTools } from "./tools/index.js";
@@ -26,6 +34,21 @@ function buildCustomHeaders(): { [key: string]: string } {
 
 // MCPセッション管理
 const sessions = new Map<string, any>();
+
+let requestSequence = 0;
+
+function sanitizeHeaders(headers: IncomingHttpHeaders): Record<string, string | string[] | undefined> {
+  const sanitized: Record<string, string | string[] | undefined> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    const lowerKey = key.toLowerCase();
+    if (lowerKey === "authorization" || lowerKey === "cookie" || lowerKey === "set-cookie") {
+      sanitized[key] = value ? "[REDACTED]" : value;
+      continue;
+    }
+    sanitized[key] = value;
+  }
+  return sanitized;
+}
 
 // ツールリストを取得する関数
 async function getToolsList() {
@@ -111,14 +134,24 @@ async function getToolsList() {
     },
     {
       name: "post-draft-note",
-      description: "note.comに下書き記事を投稿（Markdown形式の本文を自動でHTMLに変換）",
+      description: "note.comに下書き記事を投稿（Markdown形式の本文を自動でHTMLに変換、アイキャッチ画像も設定可能）",
       inputSchema: {
         type: "object",
         properties: {
           title: { type: "string", description: "記事タイトル" },
           body: { type: "string", description: "記事本文（Markdown形式で記述可能）" },
           tags: { type: "array", items: { type: "string" }, description: "タグ（最大10個）" },
-          id: { type: "string", description: "既存の下書きID（更新する場合）" }
+          id: { type: "string", description: "既存の下書きID（更新する場合）" },
+          eyecatch: {
+            type: "object",
+            properties: {
+              fileName: { type: "string", description: "ファイル名（例: eyecatch.png）" },
+              base64: { type: "string", description: "Base64エンコードされた画像データ" },
+              mimeType: { type: "string", description: "MIMEタイプ（例: image/png）" }
+            },
+            required: ["fileName", "base64"],
+            description: "アイキャッチ画像（Base64エンコード）"
+          }
         },
         required: ["title", "body"]
       }
@@ -333,6 +366,73 @@ async function getToolsList() {
         },
         required: ["query"]
       }
+    },
+    {
+      name: "publish-from-obsidian",
+      description: "Obsidian記事をnoteに公開（エディタUI操作で書式を適用、画像を自動挿入）",
+      inputSchema: {
+        type: "object",
+        properties: {
+          markdownPath: { type: "string", description: "Markdownファイルのパス" },
+          imageBasePath: { type: "string", description: "画像ファイルの基準パス（デフォルト: Markdownファイルと同じディレクトリ）" },
+          tags: { type: "array", items: { type: "string" }, description: "タグ（最大10個）" },
+          headless: { type: "boolean", description: "ヘッドレスモードで実行", default: false },
+          saveAsDraft: { type: "boolean", description: "下書きとして保存", default: true }
+        },
+        required: ["markdownPath"]
+      }
+    },
+    {
+      name: "publish-from-obsidian-remote",
+      description: "Obsidian記事をnoteに公開（画像データをBase64で受信、リモートサーバー用）",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "記事タイトル" },
+          markdown: { type: "string", description: "Markdown本文（タイトルなし）" },
+          eyecatch: {
+            type: "object",
+            properties: {
+              fileName: { type: "string", description: "ファイル名（例: eyecatch.png）" },
+              base64: { type: "string", description: "Base64エンコードされた画像データ" },
+              mimeType: { type: "string", description: "MIMEタイプ（例: image/png）" }
+            },
+            required: ["fileName", "base64"],
+            description: "アイキャッチ画像（フロントマターのeyecatchフィールドから取得）"
+          },
+          images: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                fileName: { type: "string", description: "ファイル名（例: image.png）" },
+                base64: { type: "string", description: "Base64エンコードされた画像データ" },
+                mimeType: { type: "string", description: "MIMEタイプ（例: image/png）" }
+              },
+              required: ["fileName", "base64"]
+            },
+            description: "本文中の画像の配列（現在は未使用、将来の拡張用）"
+          },
+          tags: { type: "array", items: { type: "string" }, description: "タグ（最大10個）" },
+          headless: { type: "boolean", description: "ヘッドレスモードで実行", default: true },
+          saveAsDraft: { type: "boolean", description: "下書きとして保存", default: true }
+        },
+        required: ["title", "markdown"]
+      }
+    },
+    {
+      name: "insert-images-to-note",
+      description: "noteエディタで本文に画像を挿入（Playwright使用）",
+      inputSchema: {
+        type: "object",
+        properties: {
+          imagePaths: { type: "array", items: { type: "string" }, description: "挿入する画像ファイルのパスの配列" },
+          noteId: { type: "string", description: "既存下書きのnoteIdまたはnoteKey（例: 12345 / n4f0c7b884789）" },
+          editUrl: { type: "string", description: "既存下書きの編集URL（例: https://editor.note.com/notes/nxxxx/edit/）" },
+          headless: { type: "boolean", description: "ヘッドレスモードで実行", default: false }
+        },
+        required: ["imagePaths"]
+      }
     }
   ];
 }
@@ -355,7 +455,7 @@ const HOST = env.MCP_HTTP_HOST || "127.0.0.1";
 // MCP サーバーインスタンスを作成
 const server = new McpServer({
   name: "note-api",
-  version: "2.0.0-http"
+  version: "2.1.0-http"
 });
 
 /**
@@ -363,7 +463,7 @@ const server = new McpServer({
  */
 async function initializeServer(): Promise<void> {
   console.error("◤◢◤◢◤◢◤◢◤◢◤◢◤◢");
-  console.error("🚀 note API MCP Server v2.0.0 (HTTP) を初期化中...");
+  console.error("🚀 note API MCP Server v2.1.0 (HTTP) を初期化中...");
   console.error("◤◢◤◢◤◢◤◢◤◢◤◢◤◢");
 
   // ツールの登録
@@ -378,6 +478,18 @@ async function initializeServer(): Promise<void> {
 }
 
 /**
+ * タイムアウト付きPromise
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(errorMessage)), timeoutMs)
+    )
+  ]);
+}
+
+/**
  * 認証処理の実行
  */
 async function performAuthentication(): Promise<void> {
@@ -385,14 +497,43 @@ async function performAuthentication(): Promise<void> {
   console.error("🔐 認証処理を実行中...");
   console.error("◤◢◤◢◤◢◤◢◤◢◤◢◤◢");
 
+  const forceAuthRefresh = process.env.MCP_FORCE_AUTH_REFRESH === "true";
+
   // 自動ログインの試行
-  if (env.NOTE_EMAIL && env.NOTE_PASSWORD) {
-    console.error("📧 メールアドレスとパスワードからログイン試行中...");
-    const loginSuccess = await loginToNote();
-    if (loginSuccess) {
-      console.error("✅ ログイン成功: セッションCookieを取得しました");
-    } else {
-      console.error("❌ ログイン失敗: メールアドレスまたはパスワードが正しくない可能性があります");
+  if (authStatus.hasCookie && !forceAuthRefresh) {
+    console.error("✅ 既存の認証Cookieがあるため自動ログインをスキップします");
+  } else if (env.NOTE_EMAIL && env.NOTE_PASSWORD) {
+    let authenticated = false;
+
+    try {
+      const loginSuccess = await withTimeout(
+        loginToNote(),
+        15000,
+        "loginToNoteがタイムアウトしました（15秒）"
+      );
+      if (loginSuccess) {
+        console.error("✅ loginToNote成功: セッションCookieを取得しました");
+        authenticated = true;
+      } else {
+        console.error("❌ loginToNote失敗: メールアドレスまたはパスワードが正しくない可能性があります");
+      }
+    } catch (error: any) {
+      console.error("⚠️ loginToNoteでエラー:", error.message);
+    }
+
+    if (!authenticated) {
+      try {
+        // 60秒のタイムアウトを設定（Playwrightでストレージ状態を保存するため十分な時間を確保）
+        await withTimeout(
+          refreshSessionWithPlaywright({ headless: true, navigationTimeoutMs: 45000 }),
+          60000,
+          "Playwright認証がタイムアウトしました（60秒）"
+        );
+        console.error("✅ Playwrightでセッションを更新しました");
+        authenticated = true;
+      } catch (error: any) {
+        console.error("⚠️ Playwright自動ログインでエラーが発生しました:", error.message);
+      }
     }
   }
 
@@ -415,7 +556,7 @@ async function performAuthentication(): Promise<void> {
 async function startServer(): Promise<void> {
   try {
     console.error("◤◢◤◢◤◢◤◢◤◢◤◢◤◢");
-    console.error("🌟 note API MCP Server v2.0.0 (HTTP) を起動中...");
+    console.error("🌟 note API MCP Server v2.1.0 (HTTP) を起動中...");
     console.error("◤◢◤◢◤◢◤◢◤◢◤◢◤◢");
 
     // サーバーの初期化
@@ -426,10 +567,42 @@ async function startServer(): Promise<void> {
 
     // HTTPサーバーを作成
     const httpServer = http.createServer(async (req, res) => {
+      const requestId = ++requestSequence;
+      const requestStartMs = Date.now();
+      const method = req.method ?? "UNKNOWN";
+      const url = req.url ?? "";
+      const remoteAddress = req.socket.remoteAddress ?? "unknown";
+      const remotePort = req.socket.remotePort;
+
+      console.error(`➡️ [HTTP ${requestId}] ${method} ${url} from ${remoteAddress}:${remotePort}`);
+      console.error(`   [HTTP ${requestId}] headers: ${JSON.stringify(sanitizeHeaders(req.headers))}`);
+
+      req.on("aborted", () => {
+        console.error(`🛑 [HTTP ${requestId}] req aborted`);
+      });
+      req.on("close", () => {
+        console.error(`🔌 [HTTP ${requestId}] req close`);
+      });
+      req.on("error", (error) => {
+        console.error(`❌ [HTTP ${requestId}] req error:`, error);
+      });
+
+      res.on("finish", () => {
+        const durationMs = Date.now() - requestStartMs;
+        console.error(`⬅️ [HTTP ${requestId}] ${method} ${url} -> ${res.statusCode} (${durationMs}ms) finish`);
+      });
+      res.on("close", () => {
+        const durationMs = Date.now() - requestStartMs;
+        console.error(`🔌 [HTTP ${requestId}] res close (${durationMs}ms)`);
+      });
+      res.on("error", (error) => {
+        console.error(`❌ [HTTP ${requestId}] res error:`, error);
+      });
+
       // CORSヘッダーを設定
       res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept");
 
       // プリフライトリクエストへの対応
       if (req.method === "OPTIONS") {
@@ -444,7 +617,7 @@ async function startServer(): Promise<void> {
         res.end(JSON.stringify({
           status: "ok",
           server: "note-api-mcp",
-          version: "2.0.0-http",
+          version: "2.1.0-http",
           transport: "SSE",
           authenticated: authStatus.hasCookie || authStatus.anyAuth
         }));
@@ -455,28 +628,59 @@ async function startServer(): Promise<void> {
       if (req.url?.startsWith("/mcp") || req.url?.startsWith("/sse")) {
         console.error(`📡 新しいMCP接続: ${req.socket.remoteAddress}`);
 
+        // OPTIONSプリフライトリクエストを処理
+        if (req.method === "OPTIONS") {
+          res.writeHead(200, {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS, HEAD",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Max-Age": "86400",
+            "Content-Length": "0"
+          });
+          res.end();
+          console.error("✅ OPTIONSプリフライトに応答");
+          return;
+        }
+
+        if (req.method === "HEAD") {
+          res.writeHead(204, { "Content-Length": "0" });
+          res.end();
+          return;
+        }
+
         // POSTリクエストの場合はJSON-RPCを処理
         if (req.method === "POST") {
           let body = "";
+          let bodyByteLength = 0;
           req.on("data", (chunk) => {
+            bodyByteLength += chunk.length;
             body += chunk.toString();
           });
 
           req.on("end", async () => {
+            console.error(`   [HTTP ${requestId}] body bytes: ${bodyByteLength}`);
             try {
               const message = JSON.parse(body);
               console.error("📨 受信JSON-RPC:", message.method);
 
-              // JSON-RPCレスポンスヘッダー
+              // HTTP Streamable Transport用レスポンスヘッダー（完全なCORS対応）
               res.writeHead(200, {
                 "Content-Type": "application/json",
-                "Access-Control-Allow-Origin": "*"
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS, HEAD",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+                "Access-Control-Max-Age": "86400",
+                "Transfer-Encoding": "chunked",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive"
               });
 
               // initializeリクエストを処理
               if (message.method === "initialize") {
                 const sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
                 sessions.set(sessionId, { initialized: true });
+                // グローバル初期化フラグを設定
+                sessions.set('initialized', true);
 
                 const response = {
                   jsonrpc: "2.0",
@@ -484,19 +688,23 @@ async function startServer(): Promise<void> {
                   result: {
                     protocolVersion: "2025-06-18",
                     capabilities: {
-                      tools: {},
+                      tools: {
+                        listChanged: true
+                      },
                       prompts: {},
                       resources: {}
                     },
                     serverInfo: {
                       name: "note-api-mcp",
-                      version: "2.0.0-http"
+                      version: "2.1.0-http"
                     }
                   }
                 };
 
-                res.end(JSON.stringify(response));
-                console.error("✅ Initializeレスポンスを送信しました");
+                // HTTP streaming: 改行区切りでJSONを送信
+                res.write(JSON.stringify(response) + '\n');
+                res.end();
+                console.error("✅ Initializeレスポンスを送信しました (HTTP streaming)");
                 return;
               }
 
@@ -511,8 +719,10 @@ async function startServer(): Promise<void> {
                   }
                 };
 
-                res.end(JSON.stringify(response));
-                console.error(`✅ Tools listレスポンスを送信しました (${toolsList.length}ツール)`);
+                // HTTP streaming: 改行区切りでJSONを送信
+                res.write(JSON.stringify(response) + '\n');
+                res.end();
+                console.error(`✅ Tools listレスポンスを送信しました (${toolsList.length}ツール) - HTTP streaming`);
                 return;
               }
 
@@ -729,22 +939,17 @@ async function startServer(): Promise<void> {
                         );
 
                         const noteData = data.data || {};
-                        const formattedNote = {
-                          id: noteData.id || "",
-                          title: noteData.name || "",
-                          body: noteData.body || "",
-                          user: {
-                            id: noteData.user?.id || "",
-                            name: noteData.user?.nickname || "",
-                            urlname: noteData.user?.urlname || "",
-                            bio: noteData.user?.bio || "",
-                          },
-                          publishedAt: noteData.publishAt || "",
-                          likesCount: noteData.likeCount || 0,
-                          commentsCount: noteData.commentsCount || 0,
-                          status: noteData.status || "",
-                          url: `https://note.com/${noteData.user?.urlname || 'unknown'}/n/${noteData.key || ''}`
-                        };
+
+                        // formatNote関数を使って完全なレスポンスを生成
+                        const formattedNote = formatNote(
+                          noteData,
+                          noteData.user?.urlname || '',
+                          true, // includeUserDetails
+                          true  // analyzeContent
+                        );
+
+                        // デバッグ用にAPIレスポンスをログ出力
+                        console.log('Raw API response:', JSON.stringify(noteData, null, 2));
 
                         result = {
                           content: [{
@@ -775,24 +980,18 @@ async function startServer(): Promise<void> {
                         true
                       );
 
-                      // 結果を見やすく整形
                       const noteData = data.data || {};
-                      const formattedNote = {
-                        id: noteData.id || "",
-                        title: noteData.name || "",
-                        body: noteData.body || "",
-                        user: {
-                          id: noteData.user?.id || "",
-                          name: noteData.user?.nickname || "",
-                          urlname: noteData.user?.urlname || "",
-                          bio: noteData.user?.bio || "",
-                        },
-                        publishedAt: noteData.publishAt || "",
-                        likesCount: noteData.likeCount || 0,
-                        commentsCount: noteData.commentsCount || 0,
-                        status: noteData.status || "",
-                        url: `https://note.com/${noteData.user?.urlname || 'unknown'}/n/${noteData.key || ''}`
-                      };
+
+                      // デバッグ用にAPIレスポンスをログ出力
+                      console.log('Raw API response from inline handler:', JSON.stringify(noteData, null, 2));
+
+                      // formatNote関数を使って完全なレスポンスを生成（eyecatchUrl, contentAnalysis含む）
+                      const formattedNote = formatNote(
+                        noteData,
+                        noteData.user?.urlname || '',
+                        true, // includeUserDetails
+                        true  // analyzeContent
+                      );
 
                       result = {
                         content: [{
@@ -1023,11 +1222,11 @@ async function startServer(): Promise<void> {
                     };
 
                   } else if (name === "post-draft-note") {
-                    // post-draft-noteツールの実装（11月8日成功版：2段階プロセス）
+                    // post-draft-noteツールの実装（11月8日成功版：2段階プロセス + アイキャッチ対応）
                     console.error("🔧 post-draft-note ツール開始");
-                    let { title, body, tags = [], id } = args;
+                    let { title, body, tags = [], id, eyecatch } = args;
 
-                    console.error("📝 受信パラメータ:", { title: title?.substring(0, 50), bodyLength: body?.length, tags, id });
+                    console.error("📝 受信パラメータ:", { title: title?.substring(0, 50), bodyLength: body?.length, tags, id, hasEyecatch: !!eyecatch });
 
                     try {
                       // MarkdownをHTMLに変換
@@ -1103,12 +1302,80 @@ async function startServer(): Promise<void> {
                       console.error("✅ 下書き更新レスポンス:", data);
 
                       const noteKey = args.key || `n${id}`;
+                      const editUrl = `https://editor.note.com/notes/${noteKey}/edit/`;
+
+                      // アイキャッチ画像をアップロード
+                      let eyecatchUrl: string | undefined;
+                      if (eyecatch && eyecatch.base64 && eyecatch.fileName) {
+                        console.error("🖼️ アイキャッチ画像をアップロード中...");
+                        try {
+                          const imageBuffer = Buffer.from(eyecatch.base64, 'base64');
+                          const fileName = eyecatch.fileName;
+                          const ext = path.extname(fileName).toLowerCase();
+                          const mimeTypes: { [key: string]: string } = {
+                            '.jpg': 'image/jpeg',
+                            '.jpeg': 'image/jpeg',
+                            '.png': 'image/png',
+                            '.gif': 'image/gif',
+                            '.webp': 'image/webp',
+                          };
+                          const mimeType = eyecatch.mimeType || mimeTypes[ext] || 'image/png';
+
+                          // multipart/form-data を構築
+                          const boundary = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
+                          const formParts: Buffer[] = [];
+
+                          // note_id フィールド
+                          formParts.push(Buffer.from(
+                            `--${boundary}\r\n` +
+                            `Content-Disposition: form-data; name="note_id"\r\n\r\n` +
+                            `${id}\r\n`
+                          ));
+
+                          // file フィールド
+                          formParts.push(Buffer.from(
+                            `--${boundary}\r\n` +
+                            `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
+                            `Content-Type: ${mimeType}\r\n\r\n`
+                          ));
+                          formParts.push(imageBuffer);
+                          formParts.push(Buffer.from('\r\n'));
+                          formParts.push(Buffer.from(`--${boundary}--\r\n`));
+
+                          const formData = Buffer.concat(formParts);
+
+                          console.error(`📤 アイキャッチアップロード: ${fileName} (${formData.length} bytes)`);
+
+                          const uploadResponse = await noteApiRequest(
+                            '/v1/image_upload/note_eyecatch',
+                            'POST',
+                            formData,
+                            true,
+                            {
+                              'Content-Type': `multipart/form-data; boundary=${boundary}`,
+                              'X-Requested-With': 'XMLHttpRequest',
+                              'Referer': editUrl
+                            }
+                          );
+
+                          console.error("✅ アイキャッチアップロードレスポンス:", uploadResponse);
+
+                          if (uploadResponse.data?.url) {
+                            eyecatchUrl = uploadResponse.data.url;
+                            console.error(`🎉 アイキャッチ設定成功: ${eyecatchUrl}`);
+                          }
+                        } catch (eyecatchError: any) {
+                          console.error("⚠️ アイキャッチアップロード失敗:", eyecatchError.message);
+                        }
+                      }
+
                       const resultData = {
                         success: true,
                         message: "記事を下書き保存しました",
                         noteId: id,
                         noteKey: noteKey,
-                        editUrl: `https://editor.note.com/notes/${noteKey}/edit/`,
+                        editUrl: editUrl,
+                        eyecatchUrl: eyecatchUrl,
                         data: data
                       };
 
@@ -1343,6 +1610,599 @@ async function startServer(): Promise<void> {
                       }]
                     };
 
+                  } else if (name === "publish-from-obsidian-remote") {
+                    // publish-from-obsidian-remoteツールの実装（リモートサーバー用）
+                    const { title, markdown, eyecatch, images, tags, headless = true, saveAsDraft = true } = args;
+
+                    if (!hasAuth()) {
+                      result = {
+                        content: [{
+                          type: "text",
+                          text: JSON.stringify({
+                            error: "認証が必要です",
+                            message: "NOTE_EMAILとNOTE_PASSWORDを.envファイルに設定してください"
+                          }, null, 2)
+                        }]
+                      };
+                    } else {
+                      let tempDir: string | null = null;
+                      try {
+                        // 一時ディレクトリを作成
+                        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'note-images-'));
+
+                        // アイキャッチ画像をデコードして一時ファイルに保存
+                        let eyecatchTempPath: string | null = null;
+                        if (eyecatch && eyecatch.base64 && eyecatch.fileName) {
+                          try {
+                            const buffer = Buffer.from(eyecatch.base64, 'base64');
+                            eyecatchTempPath = path.join(tempDir, eyecatch.fileName);
+                            fs.writeFileSync(eyecatchTempPath, buffer);
+                            console.log(`[publish-from-obsidian-remote] Eyecatch image saved: ${eyecatchTempPath}`);
+                          } catch (e: any) {
+                            console.error(`アイキャッチ画像デコードエラー: ${eyecatch.fileName}`, e.message);
+                          }
+                        }
+
+                        // 本文中の画像は現在未使用（将来の拡張用）
+                        const decodedImages: { fileName: string; tempPath: string }[] = [];
+                        if (images && Array.isArray(images) && images.length > 0) {
+                          console.log(`[publish-from-obsidian-remote] ${images.length} body images received (currently not inserted)`);
+                        }
+
+                        // Markdownから画像参照を削除（テキストのみ入力）
+                        let processedMarkdown = markdown;
+
+                        // Obsidian形式の画像参照を削除: ![[filename.png]]
+                        processedMarkdown = processedMarkdown.replace(
+                          /!\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g,
+                          ''
+                        );
+
+                        // 標準Markdown形式の画像参照を削除: ![alt](path)
+                        processedMarkdown = processedMarkdown.replace(
+                          /!\[([^\]]*)\]\(([^)]+)\)/g,
+                          ''
+                        );
+
+                        // 空行の連続を整理
+                        processedMarkdown = processedMarkdown.replace(/\n{3,}/g, '\n\n').trim();
+
+                        // ストレージ状態ファイルがあれば使用
+                        const storageStatePath = getStorageStatePath();
+                        let useStorageState = hasStorageState();
+                        console.log(`[publish-from-obsidian-remote] Storage state exists: ${useStorageState}`);
+
+                        // ブラウザとページを準備する関数
+                        const launchBrowserWithAuth = async (retryLogin = false) => {
+                          if (retryLogin) {
+                            console.log('[publish-from-obsidian-remote] Performing fresh Playwright login...');
+                            await refreshSessionWithPlaywright({ headless });
+                            useStorageState = true;
+                          }
+
+                          const browser = await chromium.launch({ headless, slowMo: 100 });
+                          const contextOptions: any = {
+                            viewport: { width: 1280, height: 900 },
+                            locale: 'ja-JP'
+                          };
+
+                          if (useStorageState) {
+                            contextOptions.storageState = storageStatePath;
+                            console.log(`[publish-from-obsidian-remote] Using storage state: ${storageStatePath}`);
+                          }
+
+                          const context = await browser.newContext(contextOptions);
+                          const page = await context.newPage();
+                          page.setDefaultTimeout(60000);
+
+                          console.log('[publish-from-obsidian-remote] Navigating to editor...');
+                          await page.goto('https://editor.note.com/new', { waitUntil: 'domcontentloaded' });
+                          await page.waitForTimeout(3000);
+
+                          const currentUrl = page.url();
+                          console.log(`[publish-from-obsidian-remote] Current URL: ${currentUrl}`);
+
+                          return { browser, context, page, isLoggedIn: !currentUrl.includes('/login') };
+                        };
+
+                        // 初回試行
+                        let { browser, context, page, isLoggedIn } = await launchBrowserWithAuth(false);
+
+                        // ログインページにリダイレクトされた場合、再ログインしてリトライ
+                        if (!isLoggedIn) {
+                          console.log('[publish-from-obsidian-remote] Redirected to login, will retry with fresh login...');
+                          await browser.close();
+
+                          const retry = await launchBrowserWithAuth(true);
+                          browser = retry.browser;
+                          context = retry.context;
+                          page = retry.page;
+
+                          if (!retry.isLoggedIn) {
+                            await browser.close();
+                            throw new Error('再ログイン後もエディタにアクセスできません。認証情報を確認してください。');
+                          }
+                        }
+
+                        // タイトル入力
+                        const waitForFirstVisibleLocator = async (
+                          pageObj: any,
+                          selectors: string[],
+                          timeoutMs: number
+                        ): Promise<any> => {
+                          const perSelectorTimeout = Math.max(Math.floor(timeoutMs / selectors.length), 3000);
+                          let lastError: Error | undefined;
+
+                          for (const selector of selectors) {
+                            const locator = pageObj.locator(selector).first();
+                            try {
+                              await locator.waitFor({ state: 'visible', timeout: perSelectorTimeout });
+                              return locator;
+                            } catch (error) {
+                              lastError = error as Error;
+                            }
+                          }
+
+                          throw new Error(
+                            `タイトル入力欄が見つかりませんでした: ${selectors.join(', ')}\n${lastError?.message || ''}`
+                          );
+                        };
+
+                        const fillNoteTitle = async (pageObj: any, noteTitle: string): Promise<void> => {
+                          // エディタページが完全に読み込まれるまで待機
+                          await pageObj.waitForLoadState('networkidle').catch(() => { });
+                          await pageObj.waitForTimeout(2000);
+
+                          // 現在のURLを確認
+                          const currentUrl = pageObj.url();
+                          console.log(`[publish-from-obsidian-remote] fillNoteTitle - Current URL: ${currentUrl}`);
+
+                          // ログインページにいる場合はエラー
+                          if (currentUrl.includes('/login')) {
+                            throw new Error('ログインページにリダイレクトされました。認証情報を確認してください。');
+                          }
+
+                          const titleSelectors = [
+                            // note.comエディタの最新セレクタ
+                            '[data-testid="note-title-input"]',
+                            '[data-testid="title-input"]',
+                            'textarea[name="title"]',
+                            'input[name="title"]',
+                            // プレースホルダーベース
+                            'textarea[placeholder*="タイトル"]',
+                            'input[placeholder*="タイトル"]',
+                            'textarea[placeholder*="title" i]',
+                            'input[placeholder*="title" i]',
+                            // aria-labelベース
+                            'textarea[aria-label*="タイトル"]',
+                            'input[aria-label*="タイトル"]',
+                            // contenteditable
+                            '[contenteditable="true"][data-placeholder*="タイトル"]',
+                            'h1[contenteditable="true"]',
+                            // 汎用フォールバック（エディタ内の最初のtextarea/input）
+                            'main textarea',
+                            'main input[type="text"]',
+                            '[role="main"] textarea',
+                            '[role="main"] input[type="text"]',
+                            'textarea',
+                            'input[type="text"]',
+                          ];
+
+                          console.log('[publish-from-obsidian-remote] Waiting for title input...');
+                          const titleArea = await waitForFirstVisibleLocator(pageObj, titleSelectors, 30000);
+                          console.log('[publish-from-obsidian-remote] Title input found, filling...');
+                          await titleArea.click();
+                          try {
+                            await titleArea.fill(noteTitle);
+                          } catch {
+                            const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+                            await pageObj.keyboard.press(`${modifier}+A`);
+                            await pageObj.keyboard.press('Backspace');
+                            await pageObj.keyboard.type(noteTitle);
+                          }
+                          console.log('[publish-from-obsidian-remote] Title filled successfully');
+                        };
+
+                        await fillNoteTitle(page, title);
+
+                        // Markdownを解析
+                        const elements = parseMarkdown(processedMarkdown);
+
+                        // アイキャッチ画像のパスはeyecatchTempPathを使用（フロントマターから取得）
+                        // 本文から画像要素を除外（テキストのみ入力）
+                        const bodyElements = elements.filter((element: any) => element.type !== 'image');
+
+                        // 画像挿入関数
+                        const insertImageFn = async (pageObj: any, bodyBox: any, imagePath: string) => {
+                          await pageObj.keyboard.press('Enter');
+                          await pageObj.keyboard.press('Enter');
+                          await pageObj.waitForTimeout(500);
+
+                          const bodyBoxHandle = await bodyBox.boundingBox();
+                          const allBtns = await pageObj.$$('button');
+
+                          for (const btn of allBtns) {
+                            const box = await btn.boundingBox();
+                            if (!box) continue;
+                            if (bodyBoxHandle &&
+                              box.x > bodyBoxHandle.x - 100 &&
+                              box.x < bodyBoxHandle.x &&
+                              box.y > bodyBoxHandle.y &&
+                              box.y < bodyBoxHandle.y + 200 &&
+                              box.width < 60) {
+                              await pageObj.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+                              await pageObj.waitForTimeout(300);
+                              await pageObj.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+                              await pageObj.waitForTimeout(1500);
+                              break;
+                            }
+                          }
+
+                          const imageMenuItem = pageObj.locator('[role="menuitem"]:has-text("画像")').first();
+                          const [chooser] = await Promise.all([
+                            pageObj.waitForEvent('filechooser', { timeout: 10000 }),
+                            imageMenuItem.click(),
+                          ]);
+                          await chooser.setFiles(imagePath);
+                          await pageObj.waitForTimeout(3000);
+
+                          const dialog = pageObj.locator('div[role="dialog"]');
+                          try {
+                            await dialog.waitFor({ state: 'visible', timeout: 5000 });
+                            const saveBtn = dialog.locator('button:has-text("保存")').first();
+                            await saveBtn.waitFor({ state: 'visible', timeout: 5000 });
+                            await saveBtn.click();
+                            await dialog.waitFor({ state: 'hidden', timeout: 10000 }).catch(() => { });
+                            await pageObj.waitForTimeout(3000);
+                          } catch (e) {
+                            // トリミングダイアログなし
+                          }
+                        };
+
+                        // エディタに書式付きで入力
+                        await formatToNoteEditor(page, bodyElements, tempDir, insertImageFn);
+
+                        // 下書き保存
+                        if (saveAsDraft) {
+                          const saveBtn = page.locator('button:has-text("下書き保存")').first();
+                          await saveBtn.waitFor({ state: 'visible' });
+                          if (await saveBtn.isEnabled()) {
+                            await saveBtn.click();
+                            await page.waitForURL((url) => !url.href.includes('/new'), { timeout: 30000 }).catch(() => { });
+                            await page.waitForTimeout(3000);
+                          }
+                        }
+
+                        const noteUrl = page.url();
+                        const noteKeyMatch = noteUrl.match(/\/notes\/(n[a-zA-Z0-9]+)\/edit/);
+                        const noteKey = noteKeyMatch ? noteKeyMatch[1] : undefined;
+                        const editUrl = noteKey ? `https://editor.note.com/notes/${noteKey}/edit/` : noteUrl;
+
+                        // noteIdを抽出（nプレフィックスを除去）
+                        const noteId = noteKey ? noteKey.replace(/^n/, '') : undefined;
+
+                        await browser.close();
+
+                        // API経由でアイキャッチ画像を設定
+                        let eyecatchImageKey: string | undefined;
+                        let eyecatchImageUrl: string | undefined;
+                        if (eyecatchTempPath && noteId && fs.existsSync(eyecatchTempPath)) {
+                          try {
+                            console.log(`[publish-from-obsidian-remote] Uploading eyecatch image: ${eyecatchTempPath}`);
+
+                            // 画像ファイルを読み込み
+                            const imageBuffer = fs.readFileSync(eyecatchTempPath);
+                            const fileName = path.basename(eyecatchTempPath);
+                            const ext = path.extname(eyecatchTempPath).toLowerCase();
+                            const mimeTypes: { [key: string]: string } = {
+                              '.jpg': 'image/jpeg',
+                              '.jpeg': 'image/jpeg',
+                              '.png': 'image/png',
+                              '.gif': 'image/gif',
+                              '.webp': 'image/webp',
+                            };
+                            const mimeType = mimeTypes[ext] || 'image/jpeg';
+
+                            // /api/v1/upload_image でアップロード
+                            const boundary = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
+                            const formParts: Buffer[] = [];
+
+                            formParts.push(Buffer.from(
+                              `--${boundary}\r\n` +
+                              `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
+                              `Content-Type: ${mimeType}\r\n\r\n`
+                            ));
+                            formParts.push(imageBuffer);
+                            formParts.push(Buffer.from('\r\n'));
+                            formParts.push(Buffer.from(`--${boundary}--\r\n`));
+
+                            const formData = Buffer.concat(formParts);
+
+                            const uploadResponse = await noteApiRequest(
+                              '/v1/upload_image',
+                              'POST',
+                              formData,
+                              true,
+                              {
+                                'Content-Type': `multipart/form-data; boundary=${boundary}`,
+                                'Content-Length': formData.length.toString(),
+                                'X-Requested-With': 'XMLHttpRequest',
+                                'Referer': 'https://editor.note.com/'
+                              }
+                            );
+
+                            if (uploadResponse.data && uploadResponse.data.key) {
+                              eyecatchImageKey = uploadResponse.data.key;
+                              eyecatchImageUrl = uploadResponse.data.url;
+                              console.log(`[publish-from-obsidian-remote] Image uploaded, key: ${eyecatchImageKey}`);
+
+                              // 記事を更新してアイキャッチを設定
+                              const updateResponse = await noteApiRequest(
+                                `/v1/text_notes/${noteId}`,
+                                'PUT',
+                                {
+                                  eyecatch_image_key: eyecatchImageKey
+                                },
+                                true,
+                                {
+                                  'Content-Type': 'application/json',
+                                  'X-Requested-With': 'XMLHttpRequest',
+                                  'Referer': editUrl
+                                }
+                              );
+                              console.log(`[publish-from-obsidian-remote] Eyecatch set successfully`);
+                            } else {
+                              console.error('[publish-from-obsidian-remote] Image upload failed:', uploadResponse);
+                            }
+                          } catch (eyecatchError: any) {
+                            console.error('[publish-from-obsidian-remote] Eyecatch setting failed:', eyecatchError.message);
+                          }
+                        }
+
+                        result = {
+                          content: [{
+                            type: "text",
+                            text: JSON.stringify({
+                              success: true,
+                              message: saveAsDraft ? "下書きを作成しました" : "記事を作成しました",
+                              title,
+                              noteUrl,
+                              url: noteUrl,
+                              editUrl,
+                              noteKey,
+                              noteId,
+                              eyecatchImageKey,
+                              eyecatchImageUrl,
+                              imageCount: decodedImages.length,
+                              images: decodedImages.map(i => i.fileName),
+                              tags: tags || []
+                            }, null, 2)
+                          }]
+                        };
+                      } catch (error: any) {
+                        result = {
+                          content: [{
+                            type: "text",
+                            text: JSON.stringify({
+                              error: "公開に失敗しました",
+                              message: error.message
+                            }, null, 2)
+                          }]
+                        };
+                      } finally {
+                        if (tempDir && fs.existsSync(tempDir)) {
+                          try {
+                            fs.rmSync(tempDir, { recursive: true, force: true });
+                          } catch (e) {
+                            console.error('一時ディレクトリの削除に失敗:', e);
+                          }
+                        }
+                      }
+                    }
+
+                  } else if (name === "insert-images-to-note") {
+                    const { imagePaths, noteId, editUrl, headless = false } = args;
+
+                    if (!hasAuth()) {
+                      result = {
+                        content: [{
+                          type: "text",
+                          text: JSON.stringify({
+                            error: "認証が必要です",
+                            message: "NOTE_EMAILとNOTE_PASSWORDを.envファイルに設定してください"
+                          }, null, 2)
+                        }]
+                      };
+                    } else {
+                      const missingImages = (imagePaths || []).filter((p: string) => !fs.existsSync(p));
+                      if (missingImages.length > 0) {
+                        result = {
+                          content: [{
+                            type: "text",
+                            text: JSON.stringify({
+                              error: "画像ファイルが見つかりません",
+                              missingImages
+                            }, null, 2)
+                          }]
+                        };
+                      } else {
+                        try {
+                          const normalizedEditUrl = typeof editUrl === 'string' ? editUrl.trim() : undefined;
+                          const normalizedNoteId = typeof noteId === 'string' ? noteId.trim() : undefined;
+
+                          let targetUrl = 'https://editor.note.com/new';
+                          if (normalizedEditUrl) {
+                            targetUrl = normalizedEditUrl;
+                          } else if (normalizedNoteId) {
+                            const noteKey = normalizedNoteId.startsWith('n') ? normalizedNoteId : `n${normalizedNoteId}`;
+                            targetUrl = `https://editor.note.com/notes/${noteKey}/edit/`;
+                          }
+
+                          const storageStatePath = getStorageStatePath();
+                          let useStorageState = hasStorageState();
+
+                          const launchBrowserWithAuth = async (retryLogin = false) => {
+                            if (retryLogin) {
+                              await refreshSessionWithPlaywright({ headless });
+                              useStorageState = true;
+                            }
+
+                            const browser = await chromium.launch({ headless, slowMo: 100 });
+                            const contextOptions: any = {
+                              viewport: { width: 1280, height: 900 },
+                              locale: 'ja-JP'
+                            };
+
+                            if (useStorageState) {
+                              contextOptions.storageState = storageStatePath;
+                            }
+
+                            const context = await browser.newContext(contextOptions);
+                            const page = await context.newPage();
+                            page.setDefaultTimeout(60000);
+
+                            await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+                            await page.waitForTimeout(3000);
+
+                            const currentUrl = page.url();
+                            return {
+                              browser,
+                              context,
+                              page,
+                              isLoggedIn: !currentUrl.includes('/login')
+                            };
+                          };
+
+                          let { browser, page, isLoggedIn } = await launchBrowserWithAuth(false);
+                          if (!isLoggedIn) {
+                            await browser.close();
+                            const retry = await launchBrowserWithAuth(true);
+                            browser = retry.browser;
+                            page = retry.page;
+                            if (!retry.isLoggedIn) {
+                              await browser.close();
+                              throw new Error('再ログイン後もエディタにアクセスできません。認証情報を確認してください。');
+                            }
+                          }
+
+                          const bodyBox = page.locator('div[contenteditable="true"][role="textbox"]').first();
+                          await bodyBox.waitFor({ state: 'visible' });
+                          await bodyBox.click();
+
+                          const keyCombos = process.platform === 'darwin'
+                            ? ['Meta+ArrowDown', 'End']
+                            : ['Control+End', 'End'];
+                          for (const combo of keyCombos) {
+                            try {
+                              await page.keyboard.press(combo);
+                              break;
+                            } catch {
+                            }
+                          }
+                          await page.waitForTimeout(300);
+
+                          const insertImageFn = async (pageObj: any, bodyBoxObj: any, imagePath: string) => {
+                            await pageObj.keyboard.press('Enter');
+                            await pageObj.keyboard.press('Enter');
+                            await pageObj.waitForTimeout(500);
+
+                            const bodyBoxHandle = await bodyBoxObj.boundingBox();
+                            const allBtns = await pageObj.$$('button');
+                            let clicked = false;
+
+                            for (const btn of allBtns) {
+                              const box = await btn.boundingBox();
+                              if (!box) continue;
+
+                              if (bodyBoxHandle &&
+                                box.x > bodyBoxHandle.x - 100 &&
+                                box.x < bodyBoxHandle.x &&
+                                box.y > bodyBoxHandle.y &&
+                                box.y < bodyBoxHandle.y + bodyBoxHandle.height &&
+                                box.width < 60) {
+                                await pageObj.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+                                await pageObj.waitForTimeout(300);
+                                await pageObj.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+                                await pageObj.waitForTimeout(1500);
+                                clicked = true;
+                                break;
+                              }
+                            }
+
+                            if (!clicked && bodyBoxHandle) {
+                              const plusX = bodyBoxHandle.x - 30;
+                              const plusY = bodyBoxHandle.y + 50;
+                              await pageObj.mouse.click(plusX, plusY);
+                              await pageObj.waitForTimeout(1500);
+                            }
+
+                            const imageMenuItem = pageObj.locator('[role="menuitem"]:has-text("画像")').first();
+                            const [chooser] = await Promise.all([
+                              pageObj.waitForEvent('filechooser', { timeout: 10000 }),
+                              imageMenuItem.click(),
+                            ]);
+                            await chooser.setFiles(imagePath);
+                            await pageObj.waitForTimeout(3000);
+
+                            const dialog = pageObj.locator('div[role="dialog"]');
+                            try {
+                              await dialog.waitFor({ state: 'visible', timeout: 5000 });
+                              const saveBtn = dialog.locator('button:has-text("保存")').first();
+                              await saveBtn.waitFor({ state: 'visible', timeout: 5000 });
+                              await saveBtn.click();
+                              await dialog.waitFor({ state: 'hidden', timeout: 10000 }).catch(() => { });
+                              await pageObj.waitForTimeout(3000);
+                            } catch {
+                            }
+                          };
+
+                          const insertedImages: string[] = [];
+                          for (const imagePath of imagePaths) {
+                            try {
+                              await insertImageFn(page, bodyBox, imagePath);
+                              insertedImages.push(path.basename(imagePath));
+                            } catch (e: any) {
+                              console.error(`画像挿入エラー: ${imagePath}`, e.message);
+                            }
+                          }
+
+                          const saveBtn = page.locator('button:has-text("下書き保存")').first();
+                          await saveBtn.waitFor({ state: 'visible' });
+                          if (await saveBtn.isEnabled()) {
+                            await saveBtn.click();
+                            await page.waitForTimeout(3000);
+                          }
+
+                          const noteUrl = page.url();
+                          await browser.close();
+
+                          result = {
+                            content: [{
+                              type: "text",
+                              text: JSON.stringify({
+                                success: true,
+                                message: "画像を挿入しました",
+                                noteUrl,
+                                insertedImages,
+                                totalImages: (imagePaths || []).length,
+                                successCount: insertedImages.length
+                              }, null, 2)
+                            }]
+                          };
+                        } catch (error: any) {
+                          result = {
+                            content: [{
+                              type: "text",
+                              text: JSON.stringify({
+                                error: "画像挿入に失敗しました",
+                                message: error.message
+                              }, null, 2)
+                            }]
+                          };
+                        }
+                      }
+                    }
+
                   } else {
                     // その他のツールは未実装
                     result = {
@@ -1359,8 +2219,10 @@ async function startServer(): Promise<void> {
                     result: result
                   };
 
-                  res.end(JSON.stringify(response));
-                  console.error(`✅ ツール実行完了: ${name}`);
+                  // HTTP streaming: 改行区切りでJSONを送信
+                  res.write(JSON.stringify(response) + '\n');
+                  res.end();
+                  console.error(`✅ ツール実行完了: ${name} - HTTP streaming`);
                   return;
 
                 } catch (error) {
@@ -1382,7 +2244,9 @@ async function startServer(): Promise<void> {
                       data: JSON.stringify(errorInfo, null, 2)
                     }
                   };
-                  res.end(JSON.stringify(response));
+                  // HTTP streaming: 改行区切りでJSONを送信
+                  res.write(JSON.stringify(response) + '\n');
+                  res.end();
                   return;
                 }
               }
@@ -1397,19 +2261,23 @@ async function startServer(): Promise<void> {
                 }
               };
 
-              res.end(JSON.stringify(response));
+              // HTTP streaming: 改行区切りでJSONを送信
+              res.write(JSON.stringify(response) + '\n');
+              res.end();
               console.error("⚠️ 未対応のメソッド:", message.method);
 
             } catch (error) {
               console.error("❌ JSON-RPC処理エラー:", error);
               res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({
+              // HTTP streaming: 改行区切りでJSONを送信
+              res.write(JSON.stringify({
                 jsonrpc: "2.0",
                 error: {
                   code: -32700,
                   message: "Parse error"
                 }
-              }));
+              }) + '\n');
+              res.end();
             }
           });
 
@@ -1439,6 +2307,13 @@ async function startServer(): Promise<void> {
           return;
         }
 
+        res.writeHead(405, {
+          "Content-Type": "application/json",
+          "Allow": "GET, POST, OPTIONS, HEAD"
+        });
+        res.end(JSON.stringify({
+          error: "Method Not Allowed"
+        }));
         return;
       }
 
@@ -1453,7 +2328,7 @@ async function startServer(): Promise<void> {
     // サーバーを起動
     httpServer.listen(PORT, HOST, () => {
       console.error("◤◢◤◢◤◢◤◢◤◢◤◢◤◢");
-      console.error("🎉 note API MCP Server v2.0.0 (HTTP) が正常に起動しました!");
+      console.error("🎉 note API MCP Server v2.1.0 (HTTP) が正常に起動しました!");
       console.error(`📡 HTTP/SSE transport で稼働中: http://${HOST}:${PORT}`);
       console.error("◤◢◤◢◤◢◤◢◤◢◤◢◤◢");
 
@@ -1479,6 +2354,11 @@ async function startServer(): Promise<void> {
       console.error("  - post-comment: コメント投稿");
       console.error("  - like-note / unlike-note: スキ操作");
       console.error("  - get-my-notes: 自分の記事一覧");
+
+      console.error("\n🚀 Obsidian連携機能 (v2.1.0 新機能):");
+      console.error("  - publish-from-obsidian: Obsidian記事をnoteに公開（ローカル）");
+      console.error("  - publish-from-obsidian-remote: Obsidian記事をnoteに公開（リモート/Base64画像）");
+      console.error("  - insert-images-to-note: 本文に画像を挿入（Playwright）");
 
       console.error("\n👥 ユーザー機能:");
       console.error("  - get-user: ユーザー詳細取得");
