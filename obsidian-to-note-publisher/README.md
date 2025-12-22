@@ -102,9 +102,13 @@ obsidian-to-note ./article.md --env /path/to/.env
 | NOTE_XSRF_TOKEN | note.comのXSRFトークン     | ✅    |
 
 **セッション情報の取得方法:**
-1. ブラウザでnote.comにログイン
-2. DevTools → Application → Cookies
-3. `_note_session_v5` と `XSRF-TOKEN` の値をコピー
+
+このプラグインは [note MCP](https://github.com/shimayuz/note-com-mcp) と組み合わせて使用します。
+セッション情報はnote MCPのPlaywrightセッションキャプチャ機能で自動取得されます。
+
+1. note MCPをセットアップ（[README参照](https://github.com/shimayuz/note-com-mcp)）
+2. note MCPがPlaywrightでnote.comにログインし、セッションをキャプチャ
+3. `.env`ファイルに `NOTE_SESSION_V5` と `NOTE_XSRF_TOKEN` が自動設定される
 
 ## 🔧 オプション
 
