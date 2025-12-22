@@ -157,6 +157,33 @@ async function getToolsList() {
       }
     },
     {
+      name: "post-draft-note-with-images",
+      description: "画像付きの下書き記事を作成する（Playwrightなし、API経由で画像を本文に挿入）",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "記事タイトル" },
+          body: { type: "string", description: "記事本文（Markdown形式、![[image.png]]形式の画像参照を含む）" },
+          images: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                fileName: { type: "string", description: "ファイル名（例: image.png）" },
+                base64: { type: "string", description: "Base64エンコードされた画像データ" },
+                mimeType: { type: "string", description: "MIMEタイプ（例: image/png）" }
+              },
+              required: ["fileName", "base64"]
+            },
+            description: "Base64エンコードされた画像の配列"
+          },
+          tags: { type: "array", items: { type: "string" }, description: "タグ（最大10個）" },
+          id: { type: "string", description: "既存の下書きID（更新する場合）" }
+        },
+        required: ["title", "body"]
+      }
+    },
+    {
       name: "edit-note",
       description: "既存の記事を編集する",
       inputSchema: {
@@ -1390,6 +1417,219 @@ async function startServer(): Promise<void> {
 
                     } catch (innerError) {
                       console.error("💥 post-draft-note 内部エラー:", innerError);
+                      throw innerError;
+                    }
+
+                  } else if (name === "post-draft-note-with-images") {
+                    // 画像付き下書き作成ツールの実装（API経由で画像を本文に挿入）
+                    console.error("🔧 post-draft-note-with-images ツール開始");
+                    let { title, body, images = [], tags = [], id } = args;
+
+                    console.error("📝 受信パラメータ:", { title: title?.substring(0, 50), bodyLength: body?.length, imageCount: images.length, tags, id });
+
+                    try {
+                      // 画像をアップロードしてURLを取得
+                      const uploadedImages = new Map<string, string>();
+
+                      if (images && images.length > 0) {
+                        console.error(`📤 ${images.length}件の画像をアップロード中...`);
+
+                        for (const img of images) {
+                          try {
+                            const imageBuffer = Buffer.from(img.base64, 'base64');
+                            const fileName = img.fileName;
+                            const mimeType = img.mimeType || 'image/png';
+
+                            // Step 1: Presigned URLを取得
+                            const boundary1 = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
+                            const presignFormParts: Buffer[] = [];
+                            presignFormParts.push(Buffer.from(
+                              `--${boundary1}\r\n` +
+                              `Content-Disposition: form-data; name="filename"\r\n\r\n` +
+                              `${fileName}\r\n`
+                            ));
+                            presignFormParts.push(Buffer.from(`--${boundary1}--\r\n`));
+                            const presignFormData = Buffer.concat(presignFormParts);
+
+                            const presignResponse = await noteApiRequest(
+                              '/v3/images/upload/presigned_post',
+                              'POST',
+                              presignFormData,
+                              true,
+                              {
+                                'Content-Type': `multipart/form-data; boundary=${boundary1}`,
+                                'Content-Length': presignFormData.length.toString(),
+                                'X-Requested-With': 'XMLHttpRequest',
+                                'Referer': 'https://editor.note.com/'
+                              }
+                            );
+
+                            if (!presignResponse.data?.post) {
+                              console.error(`❌ Presigned URL取得失敗: ${fileName}`);
+                              continue;
+                            }
+
+                            const { url: finalImageUrl, action: s3Url, post: s3Params } = presignResponse.data;
+
+                            // Step 2: S3にアップロード
+                            const boundary2 = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
+                            const s3FormParts: Buffer[] = [];
+
+                            const paramOrder = ['key', 'acl', 'Expires', 'policy', 'x-amz-credential', 'x-amz-algorithm', 'x-amz-date', 'x-amz-signature'];
+                            for (const key of paramOrder) {
+                              if (s3Params[key]) {
+                                s3FormParts.push(Buffer.from(
+                                  `--${boundary2}\r\n` +
+                                  `Content-Disposition: form-data; name="${key}"\r\n\r\n` +
+                                  `${s3Params[key]}\r\n`
+                                ));
+                              }
+                            }
+
+                            s3FormParts.push(Buffer.from(
+                              `--${boundary2}\r\n` +
+                              `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
+                              `Content-Type: ${mimeType}\r\n\r\n`
+                            ));
+                            s3FormParts.push(imageBuffer);
+                            s3FormParts.push(Buffer.from('\r\n'));
+                            s3FormParts.push(Buffer.from(`--${boundary2}--\r\n`));
+
+                            const s3FormData = Buffer.concat(s3FormParts);
+
+                            const s3Response = await fetch(s3Url, {
+                              method: 'POST',
+                              headers: {
+                                'Content-Type': `multipart/form-data; boundary=${boundary2}`,
+                                'Content-Length': s3FormData.length.toString()
+                              },
+                              body: s3FormData
+                            });
+
+                            if (!s3Response.ok && s3Response.status !== 204) {
+                              console.error(`❌ S3アップロード失敗: ${fileName} (${s3Response.status})`);
+                              continue;
+                            }
+
+                            uploadedImages.set(fileName, finalImageUrl);
+                            console.error(`✅ 画像アップロード成功: ${fileName} -> ${finalImageUrl}`);
+
+                          } catch (e: any) {
+                            console.error(`❌ 画像アップロードエラー: ${img.fileName}`, e.message);
+                          }
+                        }
+                      }
+
+                      // 本文内の画像参照をアップロードしたURLに置換
+                      let processedBody = body;
+
+                      // Obsidian形式の画像参照を置換: ![[filename.png]] or ![[filename.png|caption]]
+                      processedBody = processedBody.replace(
+                        /!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+                        (match: string, fileName: string, caption?: string) => {
+                          const cleanFileName = fileName.trim();
+                          const baseName = path.basename(cleanFileName);
+                          if (uploadedImages.has(baseName)) {
+                            const imageUrl = uploadedImages.get(baseName)!;
+                            const uuid1 = crypto.randomUUID();
+                            const uuid2 = crypto.randomUUID();
+                            return `<figure name="${uuid1}" id="${uuid2}"><img src="${imageUrl}" alt="" width="620" height="auto"><figcaption>${caption || ''}</figcaption></figure>`;
+                          }
+                          return match;
+                        }
+                      );
+
+                      // 標準Markdown形式の画像参照を置換: ![alt](path)
+                      processedBody = processedBody.replace(
+                        /!\[([^\]]*)\]\(([^)]+)\)/g,
+                        (match: string, alt: string, srcPath: string) => {
+                          if (srcPath.startsWith('http')) return match;
+                          const baseName = path.basename(srcPath);
+                          if (uploadedImages.has(baseName)) {
+                            const imageUrl = uploadedImages.get(baseName)!;
+                            const uuid1 = crypto.randomUUID();
+                            const uuid2 = crypto.randomUUID();
+                            return `<figure name="${uuid1}" id="${uuid2}"><img src="${imageUrl}" alt="" width="620" height="auto"><figcaption>${alt || ''}</figcaption></figure>`;
+                          }
+                          return match;
+                        }
+                      );
+
+                      // 新規作成の場合、まず空の下書きを作成
+                      if (!id) {
+                        console.error("🆕 新規下書きを作成します...");
+
+                        const createData = {
+                          body: "<p></p>",
+                          body_length: 0,
+                          name: title || "無題",
+                          index: false,
+                          is_lead_form: false
+                        };
+
+                        const headers = buildCustomHeaders();
+
+                        const createResult = await noteApiRequest(
+                          "/v1/text_notes",
+                          "POST",
+                          createData,
+                          true,
+                          headers
+                        );
+
+                        if (createResult.data?.id) {
+                          id = createResult.data.id.toString();
+                          const key = createResult.data.key || `n${id}`;
+                          console.error(`✅ 下書き作成成功: ID=${id}, key=${key}`);
+                        } else {
+                          throw new Error("下書きの作成に失敗しました");
+                        }
+                      }
+
+                      // 下書きを更新（画像付き本文）
+                      console.error(`🔄 下書きを更新します (ID: ${id})`);
+
+                      const updateData = {
+                        body: processedBody || "",
+                        body_length: (processedBody || "").length,
+                        name: title || "無題",
+                        index: false,
+                        is_lead_form: false
+                      };
+
+                      const headers = buildCustomHeaders();
+
+                      const data = await noteApiRequest(
+                        `/v1/text_notes/draft_save?id=${id}&is_temp_saved=true`,
+                        "POST",
+                        updateData,
+                        true,
+                        headers
+                      );
+
+                      const noteKey = `n${id}`;
+                      const resultData = {
+                        success: true,
+                        message: "画像付き記事を下書き保存しました",
+                        noteId: id,
+                        noteKey: noteKey,
+                        editUrl: `https://editor.note.com/notes/${noteKey}/edit/`,
+                        uploadedImages: Array.from(uploadedImages.entries()).map(([name, url]) => ({ name, url })),
+                        imageCount: uploadedImages.size,
+                        data: data
+                      };
+
+                      console.error("🎉 post-draft-note-with-images 完了:", resultData);
+
+                      result = {
+                        content: [{
+                          type: "text",
+                          text: JSON.stringify(resultData, null, 2)
+                        }]
+                      };
+
+                    } catch (innerError) {
+                      console.error("💥 post-draft-note-with-images 内部エラー:", innerError);
                       throw innerError;
                     }
 

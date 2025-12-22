@@ -409,6 +409,272 @@ async function insertCodeBlock(page, code) {
 }
 
 // ========================================
+// API経由での画像挿入（v1.2.0新機能）
+// ========================================
+
+async function uploadImageToNoteS3(imagePath, sessionCookie, xsrfToken) {
+    const imageBuffer = fs.readFileSync(imagePath);
+    const fileName = path.basename(imagePath);
+    const ext = path.extname(imagePath).toLowerCase();
+
+    const mimeTypes = {
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.png': 'image/png',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp'
+    };
+    const mimeType = mimeTypes[ext] || 'image/png';
+
+    // Step 1: Presigned URLを取得
+    const boundary1 = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
+    const presignBody =
+        `--${boundary1}\r\n` +
+        `Content-Disposition: form-data; name="filename"\r\n\r\n` +
+        `${fileName}\r\n` +
+        `--${boundary1}--\r\n`;
+
+    const presignResponse = await fetch('https://note.com/api/v3/images/upload/presigned_post', {
+        method: 'POST',
+        headers: {
+            'Content-Type': `multipart/form-data; boundary=${boundary1}`,
+            'Cookie': `_note_session_v5=${sessionCookie}; XSRF-TOKEN=${xsrfToken}`,
+            'X-XSRF-TOKEN': xsrfToken,
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': 'https://editor.note.com/'
+        },
+        body: presignBody
+    });
+
+    const presignData = await presignResponse.json();
+
+    if (!presignData.data?.post) {
+        throw new Error('Presigned URL取得失敗');
+    }
+
+    const { url: finalImageUrl, action: s3Url, post: s3Params } = presignData.data;
+
+    // Step 2: S3にアップロード
+    const boundary2 = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
+    const s3FormParts = [];
+
+    const paramOrder = ['key', 'acl', 'Expires', 'policy', 'x-amz-credential', 'x-amz-algorithm', 'x-amz-date', 'x-amz-signature'];
+    for (const key of paramOrder) {
+        if (s3Params[key]) {
+            s3FormParts.push(Buffer.from(
+                `--${boundary2}\r\n` +
+                `Content-Disposition: form-data; name="${key}"\r\n\r\n` +
+                `${s3Params[key]}\r\n`
+            ));
+        }
+    }
+
+    s3FormParts.push(Buffer.from(
+        `--${boundary2}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
+        `Content-Type: ${mimeType}\r\n\r\n`
+    ));
+    s3FormParts.push(imageBuffer);
+    s3FormParts.push(Buffer.from('\r\n'));
+    s3FormParts.push(Buffer.from(`--${boundary2}--\r\n`));
+
+    const s3FormData = Buffer.concat(s3FormParts);
+
+    const s3Response = await fetch(s3Url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': `multipart/form-data; boundary=${boundary2}`,
+            'Content-Length': s3FormData.length.toString()
+        },
+        body: s3FormData
+    });
+
+    if (!s3Response.ok && s3Response.status !== 204) {
+        throw new Error(`S3アップロード失敗: ${s3Response.status}`);
+    }
+
+    return finalImageUrl;
+}
+
+function generateUUID() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
+
+async function publishWithApi(absolutePath, envPath) {
+    console.log('\n🚀 Obsidian → note.com Publisher (API経由モード)\n');
+    console.log(`📄 ファイル: ${absolutePath}`);
+
+    // 環境変数を取得
+    const NOTE_SESSION_V5 = process.env.NOTE_SESSION_V5;
+    const NOTE_XSRF_TOKEN = process.env.NOTE_XSRF_TOKEN;
+
+    if (!NOTE_SESSION_V5 || !NOTE_XSRF_TOKEN) {
+        console.error('❌ API経由モードにはNOTE_SESSION_V5とNOTE_XSRF_TOKENが必要です');
+        console.error('   .envファイルにセッション情報を追加してください');
+        console.error('   取得方法: ブラウザでnote.comにログイン → DevTools → Application → Cookies');
+        process.exit(1);
+    }
+
+    // Markdown読み込み
+    const markdown = fs.readFileSync(absolutePath, 'utf-8');
+    const basePath = path.dirname(absolutePath);
+
+    // メタデータ抽出
+    const title = extractTitle(markdown);
+    const tags = extractTags(markdown);
+    const images = extractImages(markdown, basePath);
+
+    console.log(`📝 タイトル: ${title}`);
+    console.log(`🏷️ タグ: ${tags.length > 0 ? tags.join(', ') : '(なし)'}`);
+    console.log(`🖼️ 画像: ${images.length}件`);
+
+    // 画像の存在確認
+    const validImages = images.filter(img => img.localPath);
+    const missingImages = images.filter(img => !img.localPath);
+
+    if (missingImages.length > 0) {
+        console.log(`\n⚠️ 見つからない画像:`);
+        missingImages.forEach(img => console.log(`   - ${img.fileName}`));
+    }
+
+    // 画像をアップロード
+    const uploadedImages = new Map();
+    if (validImages.length > 0) {
+        console.log('\n📤 画像をアップロード中...');
+        for (const img of validImages) {
+            try {
+                const imageUrl = await uploadImageToNoteS3(img.localPath, NOTE_SESSION_V5, NOTE_XSRF_TOKEN);
+                uploadedImages.set(img.fileName, imageUrl);
+                console.log(`   ✅ ${img.fileName}`);
+            } catch (e) {
+                console.log(`   ❌ ${img.fileName}: ${e.message}`);
+            }
+        }
+    }
+
+    // 本文を準備（Frontmatter除去、タイトル除去）
+    let body = markdown.replace(/^---\s*\n[\s\S]*?\n---\s*\n/, '');
+    body = body.replace(/^#\s+.+\n?/, '');
+
+    // 画像参照をHTMLに置換
+    // Obsidian形式: ![[filename.png]] or ![[filename.png|caption]]
+    body = body.replace(
+        /!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+        (match, fileName, caption) => {
+            const cleanFileName = fileName.trim();
+            const baseName = path.basename(cleanFileName);
+            if (uploadedImages.has(baseName)) {
+                const imageUrl = uploadedImages.get(baseName);
+                const uuid1 = generateUUID();
+                const uuid2 = generateUUID();
+                return `<figure name="${uuid1}" id="${uuid2}"><img src="${imageUrl}" alt="" width="620" height="auto"><figcaption>${caption || ''}</figcaption></figure>`;
+            }
+            return match;
+        }
+    );
+
+    // 標準Markdown形式: ![alt](path)
+    body = body.replace(
+        /!\[([^\]]*)\]\(([^)]+)\)/g,
+        (match, alt, srcPath) => {
+            if (srcPath.startsWith('http')) return match;
+            const baseName = path.basename(srcPath);
+            if (uploadedImages.has(baseName)) {
+                const imageUrl = uploadedImages.get(baseName);
+                const uuid1 = generateUUID();
+                const uuid2 = generateUUID();
+                return `<figure name="${uuid1}" id="${uuid2}"><img src="${imageUrl}" alt="" width="620" height="auto"><figcaption>${alt || ''}</figcaption></figure>`;
+            }
+            return match;
+        }
+    );
+
+    // 基本的なMarkdown→HTML変換
+    // 見出し
+    body = body.replace(/^### (.+)$/gm, (_, text) => `<h3 name="${generateUUID()}" id="${generateUUID()}">${text}</h3>`);
+    body = body.replace(/^## (.+)$/gm, (_, text) => `<h2 name="${generateUUID()}" id="${generateUUID()}">${text}</h2>`);
+
+    // 段落
+    body = body.split('\n\n').map(para => {
+        para = para.trim();
+        if (para === '') return '';
+        if (para.startsWith('<')) return para;
+        return `<p name="${generateUUID()}" id="${generateUUID()}">${para}</p>`;
+    }).join('');
+
+    // Step 1: 下書きを作成
+    console.log('\n📝 下書きを作成中...');
+
+    const createResponse = await fetch('https://note.com/api/v1/text_notes', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Cookie': `_note_session_v5=${NOTE_SESSION_V5}; XSRF-TOKEN=${NOTE_XSRF_TOKEN}`,
+            'X-XSRF-TOKEN': NOTE_XSRF_TOKEN,
+            'X-Requested-With': 'XMLHttpRequest',
+            'Origin': 'https://editor.note.com',
+            'Referer': 'https://editor.note.com/'
+        },
+        body: JSON.stringify({
+            body: '<p></p>',
+            body_length: 0,
+            name: title,
+            index: false,
+            is_lead_form: false
+        })
+    });
+
+    const createData = await createResponse.json();
+
+    if (!createData.data?.id) {
+        console.error('❌ 下書き作成に失敗しました');
+        console.error(createData);
+        process.exit(1);
+    }
+
+    const noteId = createData.data.id;
+    const noteKey = createData.data.key;
+
+    // Step 2: 画像付き本文を保存
+    console.log('💾 画像付き本文を保存中...');
+
+    const updateResponse = await fetch(`https://note.com/api/v1/text_notes/draft_save?id=${noteId}&is_temp_saved=true`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Cookie': `_note_session_v5=${NOTE_SESSION_V5}; XSRF-TOKEN=${NOTE_XSRF_TOKEN}`,
+            'X-XSRF-TOKEN': NOTE_XSRF_TOKEN,
+            'X-Requested-With': 'XMLHttpRequest',
+            'Origin': 'https://editor.note.com',
+            'Referer': 'https://editor.note.com/'
+        },
+        body: JSON.stringify({
+            body: body,
+            body_length: body.length,
+            name: title,
+            index: false,
+            is_lead_form: false
+        })
+    });
+
+    const updateData = await updateResponse.json();
+
+    const editUrl = `https://editor.note.com/notes/${noteKey}/edit/`;
+
+    console.log('\n' + '='.repeat(50));
+    console.log('🎉 完了！');
+    console.log(`📍 編集URL: ${editUrl}`);
+    console.log(`🖼️ アップロードした画像: ${uploadedImages.size}件`);
+    console.log('='.repeat(50) + '\n');
+
+    return { noteId, noteKey, editUrl, uploadedImages };
+}
+
+// ========================================
 // Main
 // ========================================
 
@@ -417,19 +683,20 @@ async function main() {
 
     if (args.length === 0 || args.includes('--help')) {
         console.log(`
-📝 Obsidian to note.com Publisher
+📝 Obsidian to note.com Publisher v1.2.0
 
 使い方:
   npx obsidian-to-note <markdown-file> [options]
 
 オプション:
-  --headless    ブラウザを非表示で実行
+  --api         API経由で画像挿入（推奨：安定・高速）
+  --headless    ブラウザを非表示で実行（Playwrightモード）
   --help        ヘルプを表示
   --env <path>  .envファイルのパスを指定
 
 例:
-  npx obsidian-to-note ./article.md
-  npx obsidian-to-note ./article.md --headless
+  npx obsidian-to-note ./article.md --api          # API経由（推奨）
+  npx obsidian-to-note ./article.md --headless     # Playwright経由
   npx obsidian-to-note ./article.md --env /path/to/.env
 `);
         process.exit(0);
@@ -437,6 +704,7 @@ async function main() {
 
     const mdPath = args.find(a => !a.startsWith('--'));
     const headless = args.includes('--headless');
+    const useApi = args.includes('--api');
     const envIndex = args.indexOf('--env');
     const envPath = envIndex !== -1 ? args[envIndex + 1] : null;
 
@@ -457,6 +725,13 @@ async function main() {
         dotenv.config({ path: path.resolve(envPath) });
     }
 
+    // API経由モードの場合
+    if (useApi) {
+        await publishWithApi(absolutePath, envPath);
+        return;
+    }
+
+    // Playwrightモード（従来の動作）
     // 環境変数を再度取得
     const NOTE_EMAIL = process.env.NOTE_EMAIL;
     const NOTE_PASSWORD = process.env.NOTE_PASSWORD;
@@ -468,7 +743,7 @@ async function main() {
         process.exit(1);
     }
 
-    console.log('\n🚀 Obsidian → note.com Publisher\n');
+    console.log('\n🚀 Obsidian → note.com Publisher (Playwrightモード)\n');
     console.log(`📄 ファイル: ${absolutePath}`);
     if (envPath) console.log(`🔐 .env: ${envPath}`);
 

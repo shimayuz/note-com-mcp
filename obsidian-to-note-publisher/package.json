@@ -1,6 +1,6 @@
 {
     "name": "obsidian-to-note-publisher",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "description": "ワンコマンドでObsidian Markdownをnote.comに公開するツール",
     "main": "src/publisher.js",
     "bin": {

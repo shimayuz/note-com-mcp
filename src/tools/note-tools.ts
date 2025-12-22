@@ -14,6 +14,9 @@ import {
   getPreviewAccessToken,
 } from "../utils/auth.js";
 import { env } from "../config/environment.js";
+import { randomUUID } from "crypto";
+import fs from "fs";
+import path from "path";
 
 export function registerNoteTools(server: McpServer) {
   // 1. 記事詳細取得ツール
@@ -199,6 +202,234 @@ export function registerNoteTools(server: McpServer) {
       } catch (error) {
         console.error(`下書き保存処理でエラー: ${error}`);
         return handleApiError(error, "記事下書き保存");
+      }
+    }
+  );
+
+  // 4.5. 画像付き下書き作成ツール（API経由で画像を本文に挿入）
+  server.tool(
+    "post-draft-note-with-images",
+    "画像付きの下書き記事を作成する（Playwrightなし、API経由で画像を本文に挿入）",
+    {
+      title: z.string().describe("記事のタイトル"),
+      body: z.string().describe("記事の本文（Markdown形式、![[image.png]]形式の画像参照を含む）"),
+      images: z.array(z.object({
+        fileName: z.string().describe("ファイル名（例: image.png）"),
+        base64: z.string().describe("Base64エンコードされた画像データ"),
+        mimeType: z.string().optional().describe("MIMEタイプ（例: image/png）")
+      })).optional().describe("Base64エンコードされた画像の配列"),
+      tags: z.array(z.string()).optional().describe("タグ（最大10個）"),
+      id: z.string().optional().describe("既存の下書きID（既存の下書きを更新する場合）"),
+    },
+    async ({ title, body, images, tags, id }) => {
+      try {
+        if (!hasAuth()) {
+          return createAuthErrorResponse();
+        }
+
+        const buildCustomHeaders = () => {
+          const headers = buildAuthHeaders();
+          headers["content-type"] = "application/json";
+          headers["origin"] = "https://editor.note.com";
+          headers["referer"] = "https://editor.note.com/";
+          headers["x-requested-with"] = "XMLHttpRequest";
+          return headers;
+        };
+
+        // 画像をアップロードしてURLを取得
+        const uploadedImages = new Map<string, string>();
+
+        if (images && images.length > 0) {
+          console.error(`${images.length}件の画像をアップロード中...`);
+
+          for (const img of images) {
+            try {
+              const imageBuffer = Buffer.from(img.base64, 'base64');
+              const fileName = img.fileName;
+              const mimeType = img.mimeType || 'image/png';
+
+              // Step 1: Presigned URLを取得
+              const boundary1 = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
+              const presignFormParts: Buffer[] = [];
+              presignFormParts.push(Buffer.from(
+                `--${boundary1}\r\n` +
+                `Content-Disposition: form-data; name="filename"\r\n\r\n` +
+                `${fileName}\r\n`
+              ));
+              presignFormParts.push(Buffer.from(`--${boundary1}--\r\n`));
+              const presignFormData = Buffer.concat(presignFormParts);
+
+              const presignResponse = await noteApiRequest(
+                '/v3/images/upload/presigned_post',
+                'POST',
+                presignFormData,
+                true,
+                {
+                  'Content-Type': `multipart/form-data; boundary=${boundary1}`,
+                  'Content-Length': presignFormData.length.toString(),
+                  'X-Requested-With': 'XMLHttpRequest',
+                  'Referer': 'https://editor.note.com/'
+                }
+              );
+
+              if (!presignResponse.data?.post) {
+                console.error(`Presigned URL取得失敗: ${fileName}`);
+                continue;
+              }
+
+              const { url: finalImageUrl, action: s3Url, post: s3Params } = presignResponse.data;
+
+              // Step 2: S3にアップロード
+              const boundary2 = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
+              const s3FormParts: Buffer[] = [];
+
+              const paramOrder = ['key', 'acl', 'Expires', 'policy', 'x-amz-credential', 'x-amz-algorithm', 'x-amz-date', 'x-amz-signature'];
+              for (const key of paramOrder) {
+                if (s3Params[key]) {
+                  s3FormParts.push(Buffer.from(
+                    `--${boundary2}\r\n` +
+                    `Content-Disposition: form-data; name="${key}"\r\n\r\n` +
+                    `${s3Params[key]}\r\n`
+                  ));
+                }
+              }
+
+              s3FormParts.push(Buffer.from(
+                `--${boundary2}\r\n` +
+                `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
+                `Content-Type: ${mimeType}\r\n\r\n`
+              ));
+              s3FormParts.push(imageBuffer);
+              s3FormParts.push(Buffer.from('\r\n'));
+              s3FormParts.push(Buffer.from(`--${boundary2}--\r\n`));
+
+              const s3FormData = Buffer.concat(s3FormParts);
+
+              const s3Response = await fetch(s3Url, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': `multipart/form-data; boundary=${boundary2}`,
+                  'Content-Length': s3FormData.length.toString()
+                },
+                body: s3FormData
+              });
+
+              if (!s3Response.ok && s3Response.status !== 204) {
+                console.error(`S3アップロード失敗: ${fileName} (${s3Response.status})`);
+                continue;
+              }
+
+              uploadedImages.set(fileName, finalImageUrl);
+              console.error(`画像アップロード成功: ${fileName} -> ${finalImageUrl}`);
+
+            } catch (e: any) {
+              console.error(`画像アップロードエラー: ${img.fileName}`, e.message);
+            }
+          }
+        }
+
+        // 本文内の画像参照をアップロードしたURLに置換
+        let processedBody = body;
+
+        // Obsidian形式の画像参照を置換: ![[filename.png]] or ![[filename.png|caption]]
+        processedBody = processedBody.replace(
+          /!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+          (match, fileName, caption) => {
+            const cleanFileName = fileName.trim();
+            const baseName = path.basename(cleanFileName);
+            if (uploadedImages.has(baseName)) {
+              const imageUrl = uploadedImages.get(baseName)!;
+              const uuid1 = randomUUID();
+              const uuid2 = randomUUID();
+              return `<figure name="${uuid1}" id="${uuid2}"><img src="${imageUrl}" alt="" width="620" height="auto"><figcaption>${caption || ''}</figcaption></figure>`;
+            }
+            return match;
+          }
+        );
+
+        // 標準Markdown形式の画像参照を置換: ![alt](path)
+        processedBody = processedBody.replace(
+          /!\[([^\]]*)\]\(([^)]+)\)/g,
+          (match, alt, srcPath) => {
+            if (srcPath.startsWith('http')) return match;
+            const baseName = path.basename(srcPath);
+            if (uploadedImages.has(baseName)) {
+              const imageUrl = uploadedImages.get(baseName)!;
+              const uuid1 = randomUUID();
+              const uuid2 = randomUUID();
+              return `<figure name="${uuid1}" id="${uuid2}"><img src="${imageUrl}" alt="" width="620" height="auto"><figcaption>${alt || ''}</figcaption></figure>`;
+            }
+            return match;
+          }
+        );
+
+        // 新規作成の場合、まず空の下書きを作成
+        if (!id) {
+          console.error("新規下書きを作成します...");
+
+          const createData = {
+            body: "<p></p>",
+            body_length: 0,
+            name: title || "無題",
+            index: false,
+            is_lead_form: false
+          };
+
+          const headers = buildCustomHeaders();
+
+          const createResult = await noteApiRequest(
+            "/v1/text_notes",
+            "POST",
+            createData,
+            true,
+            headers
+          );
+
+          if (createResult.data?.id) {
+            id = createResult.data.id.toString();
+            const key = createResult.data.key || `n${id}`;
+            console.error(`下書き作成成功: ID=${id}, key=${key}`);
+          } else {
+            throw new Error("下書きの作成に失敗しました");
+          }
+        }
+
+        // 下書きを更新（画像付き本文）
+        console.error(`下書きを更新します (ID: ${id})`);
+
+        const updateData = {
+          body: processedBody || "",
+          body_length: (processedBody || "").length,
+          name: title || "無題",
+          index: false,
+          is_lead_form: false
+        };
+
+        const headers = buildCustomHeaders();
+
+        const data = await noteApiRequest(
+          `/v1/text_notes/draft_save?id=${id}&is_temp_saved=true`,
+          "POST",
+          updateData,
+          true,
+          headers
+        );
+
+        const noteKey = `n${id}`;
+        return createSuccessResponse({
+          success: true,
+          message: "画像付き記事を下書き保存しました",
+          noteId: id,
+          noteKey: noteKey,
+          editUrl: `https://editor.note.com/notes/${noteKey}/edit/`,
+          uploadedImages: Array.from(uploadedImages.entries()).map(([name, url]) => ({ name, url })),
+          imageCount: uploadedImages.size,
+          data: data
+        });
+
+      } catch (error) {
+        console.error(`画像付き下書き保存処理でエラー: ${error}`);
+        return handleApiError(error, "画像付き記事下書き保存");
       }
     }
   );

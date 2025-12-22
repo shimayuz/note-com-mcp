@@ -2,6 +2,22 @@
 
 ObsidianのMarkdown記事をワンクリックでnote.comに公開するツール群。
 
+## 🎉 v1.2.0 新機能
+
+**API経由での画像挿入**が追加されました！
+
+- `--api` オプションで安定・高速な画像挿入が可能
+- Playwrightなしで動作（ブラウザ不要）
+- 画像をnote.comのS3に直接アップロード
+
+```bash
+# 推奨：API経由モード（安定・高速）
+obsidian-to-note ./article.md --api
+
+# 従来：Playwrightモード
+obsidian-to-note ./article.md --headless
+```
+
 ## 🎯 概要
 
 2つのコンポーネントで構成されるハイブリッドな配布方式：
@@ -70,19 +86,34 @@ obsidian-to-note ./article.md --env /path/to/.env
 
 ## ⚙️ 環境変数
 
+### Playwrightモード（従来）
+
 | 変数名        | 説明                       | 必須 |
 | ------------- | -------------------------- | ---- |
 | NOTE_EMAIL    | note.comのメールアドレス   | ✅    |
 | NOTE_PASSWORD | note.comのパスワード       | ✅    |
 | DOTENV_PATH   | .envファイルのパス（任意） | ❌    |
 
+### API経由モード（v1.2.0〜）
+
+| 変数名          | 説明                       | 必須 |
+| --------------- | -------------------------- | ---- |
+| NOTE_SESSION_V5 | note.comのセッションCookie | ✅    |
+| NOTE_XSRF_TOKEN | note.comのXSRFトークン     | ✅    |
+
+**セッション情報の取得方法:**
+1. ブラウザでnote.comにログイン
+2. DevTools → Application → Cookies
+3. `_note_session_v5` と `XSRF-TOKEN` の値をコピー
+
 ## 🔧 オプション
 
-| オプション | 説明                     |
-| ---------- | ------------------------ |
-| --headless | ブラウザを非表示で実行   |
-| --help     | ヘルプを表示             |
-| --env      | .envファイルのパスを指定 |
+| オプション | 説明                                       |
+| ---------- | ------------------------------------------ |
+| --api      | API経由で画像挿入（推奨：安定・高速）      |
+| --headless | ブラウザを非表示で実行（Playwrightモード） |
+| --help     | ヘルプを表示                               |
+| --env      | .envファイルのパスを指定                   |
 
 ## 📝 Markdown形式
 
