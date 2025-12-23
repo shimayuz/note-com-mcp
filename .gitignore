@@ -7,6 +7,7 @@ dist/
 
 # 環境変数ファイル（機密情報を含むため）
 .env
+.env.vps
 
 # ログファイル
 *.log
@@ -34,20 +35,31 @@ docs/DRAFT_CREATION_SUCCESS_STORY.md
 # 完全開発ガイド（個人情報や具体的な実装詳細を含むため）
 docs/NOTE_MCP_DEVELOPMENT_COMPLETE_GUIDE.md
 
-
-
+# Cloudflare設定（トンネルID、ドメイン名等の個人情報を含む）
+.cloudflared/
 
 # 個人的な設定ファイル（ユーザー名、パス、Webhook URL等の個人情報を含む）
 scripts/cloudflare-tunnel.service
 scripts/monitor-services.sh
 scripts/setup-cloudflare-tunnel.sh
 scripts/manage-services.sh
+scripts/deploy-vps.sh
 
-# MCP設定ファイル（個人情報含む）
+# MCP設定ファイル（個人ドメイン情報含む）
 private.mcp.json
+claude-desktop-config.json
+cursor-mcp-config.json
+n8n-http-request-example.json
+
+# Nginx設定（個人ドメイン情報含む）
+config/nginx-note-mcp.conf
+nginx-reverse-proxy.conf
 
 # クライアントコード（開発中）
 client/
 
 # ログディレクトリ
 logs/
+
+# Obsidianプラグイン（別リポジトリで管理）
+obsidian-to-note-publisher/

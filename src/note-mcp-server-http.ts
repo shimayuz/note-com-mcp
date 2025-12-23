@@ -158,7 +158,7 @@ async function getToolsList() {
     },
     {
       name: "post-draft-note-with-images",
-      description: "画像付きの下書き記事を作成する（Playwrightなし、API経由で画像を本文に挿入）",
+      description: "画像付きの下書き記事を作成する（Playwrightなし、API経由で画像を本文に挿入、アイキャッチ設定可能）",
       inputSchema: {
         type: "object",
         properties: {
@@ -178,7 +178,17 @@ async function getToolsList() {
             description: "Base64エンコードされた画像の配列"
           },
           tags: { type: "array", items: { type: "string" }, description: "タグ（最大10個）" },
-          id: { type: "string", description: "既存の下書きID（更新する場合）" }
+          id: { type: "string", description: "既存の下書きID（更新する場合）" },
+          eyecatch: {
+            type: "object",
+            properties: {
+              fileName: { type: "string", description: "ファイル名（例: eyecatch.png）" },
+              base64: { type: "string", description: "Base64エンコードされた画像データ" },
+              mimeType: { type: "string", description: "MIMEタイプ（例: image/png）" }
+            },
+            required: ["fileName", "base64"],
+            description: "アイキャッチ画像（Base64エンコード）"
+          }
         },
         required: ["title", "body"]
       }
@@ -1423,9 +1433,9 @@ async function startServer(): Promise<void> {
                   } else if (name === "post-draft-note-with-images") {
                     // 画像付き下書き作成ツールの実装（API経由で画像を本文に挿入）
                     console.error("🔧 post-draft-note-with-images ツール開始");
-                    let { title, body, images = [], tags = [], id } = args;
+                    let { title, body, images = [], tags = [], id, eyecatch } = args;
 
-                    console.error("📝 受信パラメータ:", { title: title?.substring(0, 50), bodyLength: body?.length, imageCount: images.length, tags, id });
+                    console.error("📝 受信パラメータ:", { title: title?.substring(0, 50), bodyLength: body?.length, imageCount: images.length, tags, id, hasEyecatch: !!eyecatch });
 
                     try {
                       // 画像をアップロードしてURLを取得
@@ -1586,12 +1596,35 @@ async function startServer(): Promise<void> {
                         }
                       }
 
+                      // Markdown→HTML変換（画像タグは既に挿入済みなので保持）
+                      console.error("📝 Markdown→HTML変換中...");
+
+                      // figureタグを先に退避（convertMarkdownToNoteHtmlは<figure>タグを認識しないため）
+                      const figurePattern = /<figure[^>]*>[\s\S]*?<\/figure>/g;
+                      const figures: string[] = [];
+                      let bodyForConversion = processedBody.replace(figurePattern, (match: string) => {
+                        figures.push(match);
+                        return `__FIGURE_PLACEHOLDER_${figures.length - 1}__`;
+                      });
+
+                      // Markdown→HTML変換
+                      let htmlBody = convertMarkdownToNoteHtml(bodyForConversion);
+
+                      // figureタグを復元
+                      figures.forEach((figure, index) => {
+                        htmlBody = htmlBody.replace(`__FIGURE_PLACEHOLDER_${index}__`, figure);
+                        // プレースホルダーが<p>タグで囲まれている場合は除去
+                        htmlBody = htmlBody.replace(`<p>__FIGURE_PLACEHOLDER_${index}__</p>`, figure);
+                      });
+
+                      console.error(`✅ HTML変換完了 (${htmlBody.length} chars)`);
+
                       // 下書きを更新（画像付き本文）
                       console.error(`🔄 下書きを更新します (ID: ${id})`);
 
                       const updateData = {
-                        body: processedBody || "",
-                        body_length: (processedBody || "").length,
+                        body: htmlBody || "",
+                        body_length: (htmlBody || "").length,
                         name: title || "無題",
                         index: false,
                         is_lead_form: false
@@ -1608,12 +1641,80 @@ async function startServer(): Promise<void> {
                       );
 
                       const noteKey = `n${id}`;
+                      const editUrl = `https://editor.note.com/notes/${noteKey}/edit/`;
+
+                      // アイキャッチ画像をアップロード
+                      let eyecatchUrl: string | undefined;
+                      if (eyecatch && eyecatch.base64 && eyecatch.fileName) {
+                        console.error("🖼️ アイキャッチ画像をアップロード中...");
+                        try {
+                          const imageBuffer = Buffer.from(eyecatch.base64, 'base64');
+                          const fileName = eyecatch.fileName;
+                          const ext = path.extname(fileName).toLowerCase();
+                          const mimeTypes: { [key: string]: string } = {
+                            '.jpg': 'image/jpeg',
+                            '.jpeg': 'image/jpeg',
+                            '.png': 'image/png',
+                            '.gif': 'image/gif',
+                            '.webp': 'image/webp',
+                          };
+                          const mimeType = eyecatch.mimeType || mimeTypes[ext] || 'image/png';
+
+                          // multipart/form-data を構築
+                          const boundary = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
+                          const formParts: Buffer[] = [];
+
+                          // note_id フィールド
+                          formParts.push(Buffer.from(
+                            `--${boundary}\r\n` +
+                            `Content-Disposition: form-data; name="note_id"\r\n\r\n` +
+                            `${id}\r\n`
+                          ));
+
+                          // file フィールド
+                          formParts.push(Buffer.from(
+                            `--${boundary}\r\n` +
+                            `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
+                            `Content-Type: ${mimeType}\r\n\r\n`
+                          ));
+                          formParts.push(imageBuffer);
+                          formParts.push(Buffer.from('\r\n'));
+                          formParts.push(Buffer.from(`--${boundary}--\r\n`));
+
+                          const formData = Buffer.concat(formParts);
+
+                          console.error(`📤 アイキャッチアップロード: ${fileName} (${formData.length} bytes)`);
+
+                          const uploadResponse = await noteApiRequest(
+                            '/v1/image_upload/note_eyecatch',
+                            'POST',
+                            formData,
+                            true,
+                            {
+                              'Content-Type': `multipart/form-data; boundary=${boundary}`,
+                              'X-Requested-With': 'XMLHttpRequest',
+                              'Referer': editUrl
+                            }
+                          );
+
+                          console.error("✅ アイキャッチアップロードレスポンス:", uploadResponse);
+
+                          if (uploadResponse.data?.url) {
+                            eyecatchUrl = uploadResponse.data.url;
+                            console.error(`🎉 アイキャッチ設定成功: ${eyecatchUrl}`);
+                          }
+                        } catch (eyecatchError: any) {
+                          console.error("⚠️ アイキャッチアップロード失敗:", eyecatchError.message);
+                        }
+                      }
+
                       const resultData = {
                         success: true,
                         message: "画像付き記事を下書き保存しました",
                         noteId: id,
                         noteKey: noteKey,
-                        editUrl: `https://editor.note.com/notes/${noteKey}/edit/`,
+                        editUrl: editUrl,
+                        eyecatchUrl: eyecatchUrl,
                         uploadedImages: Array.from(uploadedImages.entries()).map(([name, url]) => ({ name, url })),
                         imageCount: uploadedImages.size,
                         data: data

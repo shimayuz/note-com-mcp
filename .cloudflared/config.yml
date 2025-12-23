@@ -1,7 +1,0 @@
-tunnel: 10db1c72-e5b6-439b-8691-07010289717f
-credentials-file: /Users/heavenlykiss0820/.cloudflared/10db1c72-e5b6-439b-8691-07010289717f.json
-
-ingress:
-  - hostname: note-mcp.composition2940.com
-    service: http://localhost:3002
-  - service: http_status:404

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { noteApiRequest } from "../utils/api-client.js";
 import { formatNote, formatComment, formatLike } from "../utils/formatters.js";
+import { convertMarkdownToNoteHtml } from "../utils/markdown-converter.js";
 import {
   createSuccessResponse,
   createErrorResponse,
@@ -394,12 +395,34 @@ export function registerNoteTools(server: McpServer) {
           }
         }
 
+        // Markdown→HTML変換（画像タグは既に挿入済みなので保持）
+        console.error("Markdown→HTML変換中...");
+
+        // figureタグを先に退避（convertMarkdownToNoteHtmlは<figure>タグを認識しないため）
+        const figurePattern = /<figure[^>]*>[\s\S]*?<\/figure>/g;
+        const figures: string[] = [];
+        let bodyForConversion = processedBody.replace(figurePattern, (match: string) => {
+          figures.push(match);
+          return `__FIGURE_PLACEHOLDER_${figures.length - 1}__`;
+        });
+
+        // Markdown→HTML変換
+        let htmlBody = convertMarkdownToNoteHtml(bodyForConversion);
+
+        // figureタグを復元
+        figures.forEach((figure, index) => {
+          htmlBody = htmlBody.replace(`__FIGURE_PLACEHOLDER_${index}__`, figure);
+          htmlBody = htmlBody.replace(`<p>__FIGURE_PLACEHOLDER_${index}__</p>`, figure);
+        });
+
+        console.error(`HTML変換完了 (${htmlBody.length} chars)`);
+
         // 下書きを更新（画像付き本文）
         console.error(`下書きを更新します (ID: ${id})`);
 
         const updateData = {
-          body: processedBody || "",
-          body_length: (processedBody || "").length,
+          body: htmlBody || "",
+          body_length: (htmlBody || "").length,
           name: title || "無題",
           index: false,
           is_lead_form: false

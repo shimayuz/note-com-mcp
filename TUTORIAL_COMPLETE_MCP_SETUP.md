@@ -72,7 +72,7 @@ docker run -d --name cloudflared --network host --restart=always \
 3. **Add a public hostname** をクリック
 4. 以下のように設定：
    - **Subdomain**: note-mcp
-   - **Domain**: composition2940.com
+   - **Domain**: your-domain.com
    - **Service URL**: `http://127.0.0.1:8080`（※後でnginxを設定するため）
 
 ---
@@ -142,7 +142,7 @@ docker logs cloudflared --tail 10 | grep "Updated to new configuration"
 
 ### 4.2 HTTPSエンドポイントのテスト
 ```bash
-curl -X POST https://note-mcp.composition2940.com/mcp \
+curl -X POST https://note-mcp.your-domain.com/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
@@ -158,7 +158,7 @@ curl -X POST https://note-mcp.composition2940.com/mcp \
 2. **Model Provider** で **Custom** を選択
 3. **MCP Endpoint** に以下を設定：
    ```
-   https://note-mcp.composition2940.com/mcp
+   https://note-mcp.your-domain.com/mcp
    ```
 4. **Connect** をクリック
 
@@ -226,7 +226,7 @@ docker logs cloudflared --tail 20 -f
 
 MCP_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/health)
 NGINX_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
-HTTPS_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" https://note-mcp.composition2940.com/health)
+HTTPS_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" https://note-mcp.your-domain.com/health)
 
 echo "MCP Server: $MCP_HEALTH"
 echo "Nginx: $NGINX_HEALTH"
@@ -295,7 +295,7 @@ docker logs cloudflared --tail 5
 **解決策**: MCPサーバーのCORS設定を確認
 ```bash
 # OPTIONSリクエストテスト
-curl -X OPTIONS https://note-mcp.composition2940.com/mcp \
+curl -X OPTIONS https://note-mcp.your-domain.com/mcp \
   -H "Origin: https://app.n8n.cloud" \
   -H "Access-Control-Request-Method: POST" \
   -H "Access-Control-Request-Headers: Content-Type"
@@ -397,7 +397,7 @@ docker-compose -f docker-compose.xserver.yml up -d
 
 ### 最終的なエンドポイント
 ```
-https://mcp-note.composition2940.com/mcp
+https://mcp-note.your-domain.com/mcp
 ```
 
 このURLをn8n Agent nodeに設定するだけで、note.comの全機能がLLMから利用可能になります！

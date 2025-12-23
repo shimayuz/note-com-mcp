@@ -116,7 +116,7 @@ docker run -d --name cloudflared --network host --restart=always \
 ```
 
 ### Cloudflare GUI設定
-- **Public Hostname**: `note-mcp.composition2940.com`
+- **Public Hostname**: `note-mcp.your-domain.com`
 - **Service URL**: `http://127.0.0.1:8080`
 
 ---
@@ -167,7 +167,7 @@ docker run -d --name cloudflared --network host --restart=always \
 
 ### HTTPSエンドポイントテスト
 ```bash
-curl -X POST https://note-mcp.composition2940.com/mcp \
+curl -X POST https://note-mcp.your-domain.com/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
@@ -175,7 +175,7 @@ curl -X POST https://note-mcp.composition2940.com/mcp \
 **結果**: 26ツール全てが正常に返信されることを確認
 
 ### n8n Agent node設定
-- **MCPエンドポイント**: `https://note-mcp.composition2940.com/mcp`
+- **MCPエンドポイント**: `https://note-mcp.your-domain.com/mcp`
 - **認証**: 不要（CORS対応済み）
 - **プロトコル**: HTTPS
 
@@ -203,7 +203,7 @@ curl -X POST https://note-mcp.composition2940.com/mcp \
 ### ヘルスチェック
 ```bash
 # サーバー健全性
-curl https://note-mcp.composition2940.com/health
+curl https://note-mcp.your-domain.com/health
 
 # コンテナ状態
 docker ps | grep -E "(note-mcp|nginx|cloudflared)"

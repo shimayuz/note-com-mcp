@@ -2,10 +2,10 @@
  * シンプルなMarkdownからHTMLへの変換ユーティリティ
  * note.comのHTML形式に最適化（UUID属性付き）
  *
- * note.com変換ルール：
- * - H1 → 大見出し (h2)
- * - H2 → 小見出し (h3)
- * - H3-H6 → 強調 (strong)
+ * note.com変換ルール（Obsidian基準）：
+ * - H1, H2 → 大見出し (h2)
+ * - H3 → 小見出し (h3)
+ * - H4-H6 → 強調 (strong)
  * - 箇条書き → ul/li
  * - 番号付きリスト → ol/li
  * - コードブロック → pre/code
@@ -103,7 +103,8 @@ export function convertMarkdownToHtml(markdown: string): string {
             continue;
         }
 
-        // 見出しの処理（note.comルール適用）
+        // 見出しの処理（Obsidian→note.comルール適用）
+        // H1 → 大見出し (h2)
         const h1Match = line.match(/^# (.+)$/);
         if (h1Match) {
             if (inList) {
@@ -115,6 +116,7 @@ export function convertMarkdownToHtml(markdown: string): string {
             continue;
         }
 
+        // H2 → 大見出し (h2)
         const h2Match = line.match(/^## (.+)$/);
         if (h2Match) {
             if (inList) {
@@ -122,10 +124,11 @@ export function convertMarkdownToHtml(markdown: string): string {
                 listItems = [];
                 inList = null;
             }
-            result.push(`<h3>${processInline(h2Match[1])}</h3>`);
+            result.push(`<h2>${processInline(h2Match[1])}</h2>`);
             continue;
         }
 
+        // H3 → 小見出し (h3)
         const h3Match = line.match(/^### (.+)$/);
         if (h3Match) {
             if (inList) {
@@ -133,11 +136,11 @@ export function convertMarkdownToHtml(markdown: string): string {
                 listItems = [];
                 inList = null;
             }
-            // H3以降は強調として処理
-            result.push(`<p><strong>${processInline(h3Match[1])}</strong></p>`);
+            result.push(`<h3>${processInline(h3Match[1])}</h3>`);
             continue;
         }
 
+        // H4以降 → 強調 (strong)
         const h4PlusMatch = line.match(/^#{4,6} (.+)$/);
         if (h4PlusMatch) {
             if (inList) {

@@ -182,6 +182,7 @@ cloudflared tunnel run note-mcp
 - 記事の詳細分析（エンゲージメント分析、コンテンツ分析、価格分析など）
 - 自分の記事一覧（下書き含む）の取得
 - 記事の投稿と編集（下書き）
+- **🆕 画像付き下書き作成（Markdown→HTML自動変換、アイキャッチ対応）**
 - **🆕 画像のアップロード（記事に使用可能な画像URLを取得）**
 - コメントの閲覧と投稿
 - スキの管理（取得・追加・削除）
@@ -604,7 +605,7 @@ n8nで「MCP Client HTTP Streamable」ノードを使用して接続します：
 
 **n8n設定:**
 ```
-HTTP Stream URL: https://note-mcp.composition2940.com/mcp
+HTTP Stream URL: https://note-mcp.your-domain.com/mcp
 HTTP Connection Timeout: 60000
 Messages Post Endpoint: (空欄)
 Additional Headers: (空欄)
@@ -767,7 +768,8 @@ launchctl stop com.cloudflared.note-mcp
 
 ### 自分の記事関連（認証必須）
 - **get-my-notes**: 自分の記事一覧（下書き含む）を取得
-- **post-draft-note**: 下書き記事を投稿・更新
+- **post-draft-note**: 下書き記事を投稿・更新（アイキャッチ対応）
+- **post-draft-note-with-images**: 🆕 画像付き下書き記事を作成（API経由で画像を本文に挿入、アイキャッチ対応）
 - **open-note-editor**: 記事の編集ページURLを生成
 - **upload-image**: 画像をアップロード（ファイルパス、URL、Base64から）
 - **upload-images-batch**: 複数の画像を一括アップロード
@@ -793,7 +795,26 @@ launchctl stop com.cloudflared.note-mcp
 
 ### APIの制限
 
-- **下書き保存機能（post-draft-note）**: まだ未実装です。
+- **下書き保存機能（post-draft-note / post-draft-note-with-images）**: 実装済みです。Markdown形式の本文を自動的にnote.com用HTMLに変換します。
+
+### Markdown→HTML変換ルール
+
+Obsidianなどで作成したMarkdownは、以下のルールでnote.com用HTMLに自動変換されます：
+
+| Markdown                 | note.com             | HTML            |
+| ------------------------ | -------------------- | --------------- |
+| `#` (H1)                 | 大見出し             | `<h2>`          |
+| `##` (H2)                | 大見出し             | `<h2>`          |
+| `###` (H3)               | 小見出し             | `<h3>`          |
+| `####`〜`######` (H4-H6) | 太字                 | `<strong>`      |
+| `- item` / `* item`      | 箇条書き             | `<ul><li>`      |
+| `1. item`                | 番号付きリスト       | `<ol><li>`      |
+| ` ```code``` `           | コードブロック       | `<pre><code>`   |
+| `> quote`                | 引用                 | `<blockquote>`  |
+| `**bold**`               | 太字                 | `<strong>`      |
+| `*italic*`               | 斜体                 | `<em>`          |
+| `[text](url)`            | リンク               | `<a href>`      |
+| `![[image.png]]`         | 画像（Obsidian形式） | `<figure><img>` |
 
 - **検索結果の上限**: 単一の検索リクエストで取得できる結果は最大20件程度です。より多くの結果を取得する場合は、`start`パラメータを使用してページネーションを行ってください。
 
@@ -810,6 +831,29 @@ launchctl stop com.cloudflared.note-mcp
 - **edit-note/publish-note**: 下書き編集や公開機能は、セッションCookieとXSRFトークンで利用可能です。
 
 ### 新機能の使用例
+
+#### 画像付き下書き作成ツール（post-draft-note-with-images）
+
+Obsidianプラグインや他のMCPクライアントから、画像付きの記事を簡単に作成できます：
+
+```javascript
+// 基本的な使用例
+post-draft-note-with-images({
+  title: "記事タイトル",
+  body: "## 大見出し\n\n本文テキスト\n\n![[image.png]]\n\n### 小見出し\n\n続きの本文",
+  images: [
+    { fileName: "image.png", base64: "...", mimeType: "image/png" }
+  ],
+  tags: ["タグ1", "タグ2"],
+  eyecatch: { fileName: "thumbnail.png", base64: "...", mimeType: "image/png" }
+})
+```
+
+**特徴:**
+- Markdown形式の本文を自動的にnote.com用HTMLに変換
+- `![[image.png]]` 形式のObsidian画像参照を自動認識
+- アイキャッチ画像（サムネイル）の設定に対応
+- 複数画像の一括アップロード
 
 #### 記事詳細分析ツールの例
 
