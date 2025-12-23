@@ -68,3 +68,31 @@ obsidian-to-note-publisher/
 DEPLOYMENT.md
 SUCCESS_STORY.md
 TUTORIAL_COMPLETE_MCP_SETUP.md
+
+# 開発メモ・リファクタリング記録
+REFACTORING.md
+business-plan-draft.md
+
+# 特定環境向けデプロイガイド
+XSERVER_DEPLOY.md
+
+# テストファイル
+linebreak-test.md
+markdown-test-sample.md
+test-article-draft.md
+test-stdio-md.json
+test-stdio-server.js
+
+# 開発用ドキュメント
+docs/2025-12-21-auth-debug.md
+docs/API_CAPTURE_GUIDE.md
+docs/CLOUDFLARE_TUNNEL_SETUP.md
+docs/DEPLOYMENT_GUIDE.md
+docs/DEVELOPMENT_NOTES.md
+docs/DEVELOPMENT_NOTES_EYECATCH_IMPLEMENTATION.md
+docs/DEVELOPMENT_NOTES_IMAGE_API.md
+docs/DEVELOPMENT_NOTES_OBSIDIAN.md
+docs/IMAGE_UPLOAD_GUIDE.md
+docs/IMAGE_UPLOAD_RESEARCH.md
+docs/README_DEVELOPMENT.md
+docs/playwright-image-insert-analysis.md
