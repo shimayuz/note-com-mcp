@@ -23,6 +23,7 @@ note.comのAPIを利用して、Claude Desktop、Cursor、n8nなどのMCPクラ�
 git clone https://github.com/shimayuz/note-com-mcp.git
 cd note-com-mcp
 npm install
+npx playwright install  # ブラウザ自動ログイン用
 npm run build
 ```
 
