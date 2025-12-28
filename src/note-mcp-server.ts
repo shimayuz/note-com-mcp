@@ -6,6 +6,12 @@ import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
 import { refreshSessionWithPlaywright } from "./utils/playwright-session.js";
+import {
+  getActiveSessionCookie,
+  getActiveXsrfToken,
+  setActiveSessionCookie,
+  setActiveXsrfToken
+} from "./utils/auth.js";
 
 // Markdown converter utility
 import { convertMarkdownToNoteHtml } from "./utils/markdown-converter.js";
@@ -31,9 +37,22 @@ const NOTE_EMAIL = process.env.NOTE_EMAIL || "";
 const NOTE_PASSWORD = process.env.NOTE_PASSWORD || "";
 const NOTE_USER_ID = process.env.NOTE_USER_ID || "";
 
-// 動的セッション情報を保持する変数
-let activeSessionCookie: string | null = null;
-let activeXsrfToken: string | null = null;
+// 動的セッション情報はauth.tsの共通関数を使用
+// Playwrightセッション取得後の値を同期するためのヘルパー
+function syncSessionFromAuth(): void {
+  const sessionCookie = getActiveSessionCookie();
+  const xsrfToken = getActiveXsrfToken();
+  if (sessionCookie) {
+    localActiveSessionCookie = sessionCookie;
+  }
+  if (xsrfToken) {
+    localActiveXsrfToken = xsrfToken;
+  }
+}
+
+// ローカルキャッシュ（API呼び出し時に使用）
+let localActiveSessionCookie: string | null = null;
+let localActiveXsrfToken: string | null = null;
 
 // 認証状態
 const AUTH_STATUS = {
@@ -292,9 +311,9 @@ async function loginToNote(): Promise<boolean> {
       console.error("Playwrightでブラウザログインを試行します...");
       try {
         await refreshSessionWithPlaywright({ headless: false });
-        activeSessionCookie = process.env.NOTE_SESSION_V5 ? `_note_session_v5=${process.env.NOTE_SESSION_V5}` : null;
-        activeXsrfToken = process.env.NOTE_XSRF_TOKEN || null;
-        if (activeSessionCookie) {
+        // Playwrightがauth.tsに設定した値を同期
+        syncSessionFromAuth();
+        if (localActiveSessionCookie) {
           console.error("Playwrightでのログインに成功しました。");
           return true;
         }
@@ -311,7 +330,7 @@ async function loginToNote(): Promise<boolean> {
       const responseData = JSON.parse(responseText);
       if (responseData && responseData.data && responseData.data.token) {
         // レスポンスボディからトークンが見つかった場合
-        activeSessionCookie = `_note_session_v5=${responseData.data.token}`;
+        localActiveSessionCookie = `_note_session_v5=${responseData.data.token}`;
         if (DEBUG) console.error("Session token found in response body:", responseData.data.token);
         console.error("Login successful. Session token obtained from response body.");
       }
@@ -327,31 +346,31 @@ async function loginToNote(): Promise<boolean> {
 
       cookies.forEach(cookieStr => {
         if (cookieStr.includes("_note_session_v5=")) {
-          activeSessionCookie = cookieStr.split(';')[0];
-          if (DEBUG) console.error("Session cookie set:", activeSessionCookie);
+          localActiveSessionCookie = cookieStr.split(';')[0];
+          if (DEBUG) console.error("Session cookie set:", localActiveSessionCookie);
         }
         if (cookieStr.includes("XSRF-TOKEN=")) {
-          activeXsrfToken = cookieStr.split(';')[0].split('=')[1];
-          if (DEBUG) console.error("XSRF token from cookie:", activeXsrfToken);
+          localActiveXsrfToken = cookieStr.split(';')[0].split('=')[1];
+          if (DEBUG) console.error("XSRF token from cookie:", localActiveXsrfToken);
         }
       });
 
       const responseXsrfToken = response.headers.get("x-xsrf-token");
       if (responseXsrfToken) {
-        activeXsrfToken = responseXsrfToken;
-        if (DEBUG) console.error("XSRF Token from header:", activeXsrfToken);
-      } else if (DEBUG && !activeXsrfToken) {
+        localActiveXsrfToken = responseXsrfToken;
+        if (DEBUG) console.error("XSRF Token from header:", localActiveXsrfToken);
+      } else if (DEBUG && !localActiveXsrfToken) {
         console.error("XSRF Token not found in initial login headers.");
       }
     }
 
-    if (!activeSessionCookie) {
+    if (!localActiveSessionCookie) {
       console.error("APIログインでセッションCookieを取得できませんでした。Playwrightでブラウザログインを試行します...");
       try {
         await refreshSessionWithPlaywright({ headless: false });
-        activeSessionCookie = process.env.NOTE_SESSION_V5 ? `_note_session_v5=${process.env.NOTE_SESSION_V5}` : null;
-        activeXsrfToken = process.env.NOTE_XSRF_TOKEN || null;
-        if (activeSessionCookie) {
+        // Playwrightがauth.tsに設定した値を同期
+        syncSessionFromAuth();
+        if (localActiveSessionCookie) {
           console.error("Playwrightでのログインに成功しました。");
           return true;
         }
@@ -366,7 +385,7 @@ async function loginToNote(): Promise<boolean> {
     console.error("Login successful. Session cookie obtained.");
 
     // セッションクッキーが取得できたら、current_userリクエストでXSRFトークンを取得する
-    if (activeSessionCookie && !activeXsrfToken) {
+    if (localActiveSessionCookie && !localActiveXsrfToken) {
       console.error("Trying to obtain XSRF token from current_user API...");
       try {
         const currentUserResponse = await fetch(`${API_BASE_URL}/v2/current_user`, {
@@ -374,16 +393,16 @@ async function loginToNote(): Promise<boolean> {
           headers: {
             "Accept": "application/json",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36",
-            "Cookie": activeSessionCookie
+            "Cookie": localActiveSessionCookie
           },
         });
 
         // XSRFトークンをヘッダーから取得
         const xsrfToken = currentUserResponse.headers.get("x-xsrf-token");
         if (xsrfToken) {
-          activeXsrfToken = xsrfToken;
+          localActiveXsrfToken = xsrfToken;
           console.error("XSRF token successfully obtained from current_user API.");
-          if (DEBUG) console.error("XSRF Token:", activeXsrfToken);
+          if (DEBUG) console.error("XSRF Token:", localActiveXsrfToken);
         } else {
           // Set-Cookieヘッダーからも確認
           const currentUserSetCookie = currentUserResponse.headers.get("set-cookie");
@@ -391,14 +410,14 @@ async function loginToNote(): Promise<boolean> {
             const cookies = Array.isArray(currentUserSetCookie) ? currentUserSetCookie : [currentUserSetCookie];
             cookies.forEach(cookieStr => {
               if (cookieStr.includes("XSRF-TOKEN=")) {
-                activeXsrfToken = cookieStr.split(';')[0].split('=')[1];
+                localActiveXsrfToken = cookieStr.split(';')[0].split('=')[1];
                 console.error("XSRF token found in current_user response cookies.");
-                if (DEBUG) console.error("XSRF Token from cookie:", activeXsrfToken);
+                if (DEBUG) console.error("XSRF Token from cookie:", localActiveXsrfToken);
               }
             });
           }
 
-          if (!activeXsrfToken) {
+          if (!localActiveXsrfToken) {
             console.error("Could not obtain XSRF token from current_user API.");
           }
         }
@@ -407,7 +426,7 @@ async function loginToNote(): Promise<boolean> {
       }
     }
 
-    return activeSessionCookie !== null;
+    return localActiveSessionCookie !== null;
   } catch (error) {
     console.error("Error during login:", error);
     return false;
@@ -435,15 +454,15 @@ async function noteApiRequest(path: string, method: string = "GET", body: any = 
     if (cookies.length > 0) {
       headers["Cookie"] = cookies.join("; ");
     }
-  } else if (activeSessionCookie) {
+  } else if (localActiveSessionCookie) {
     // 動的に取得したセッションCookieを使用
-    headers["Cookie"] = activeSessionCookie;
+    headers["Cookie"] = localActiveSessionCookie;
     if (DEBUG) console.error("Using dynamically obtained session cookie");
   } else if (requireAuth && NOTE_EMAIL && NOTE_PASSWORD) {
     // 認証情報が必要で、メールアドレスとパスワードが設定されている場合はログイン試行
     const loggedIn = await loginToNote();
-    if (loggedIn && activeSessionCookie) {
-      headers["Cookie"] = activeSessionCookie;
+    if (loggedIn && localActiveSessionCookie) {
+      headers["Cookie"] = localActiveSessionCookie;
     } else {
       throw new Error("認証が必要です。ログインに失敗しました。");
     }
@@ -453,9 +472,9 @@ async function noteApiRequest(path: string, method: string = "GET", body: any = 
   }
 
   // XSRFトークンの設定
-  if (activeXsrfToken) {
+  if (localActiveXsrfToken) {
     // 動的に取得したXSRFトークンを優先使用
-    headers["X-XSRF-TOKEN"] = activeXsrfToken;
+    headers["X-XSRF-TOKEN"] = localActiveXsrfToken;
   } else if (NOTE_XSRF_TOKEN) {
     // 従来のXSRFトークン設定（互換性のために維持）
     headers["X-XSRF-TOKEN"] = NOTE_XSRF_TOKEN;
@@ -530,7 +549,7 @@ async function noteApiRequest(path: string, method: string = "GET", body: any = 
 }
 function hasAuth() {
   // 動的に取得したセッションCookieを優先的にチェック
-  return activeSessionCookie !== null || AUTH_STATUS.anyAuth;
+  return localActiveSessionCookie !== null || AUTH_STATUS.anyAuth;
 }
 
 // 検索と分析ツールを拡張
@@ -1891,7 +1910,7 @@ async function main() {
     console.error("note API MCP Server is running on stdio transport");
 
     // 認証状態を表示
-    if (activeSessionCookie || NOTE_SESSION_V5 || NOTE_XSRF_TOKEN) {
+    if (localActiveSessionCookie || NOTE_SESSION_V5 || NOTE_XSRF_TOKEN) {
       console.error("認証情報が設定されています。認証が必要な機能も利用できます。");
     } else {
       console.error("警告: 認証情報が設定されていません。読み取り機能のみ利用可能です。");
