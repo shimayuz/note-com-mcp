@@ -1924,9 +1924,16 @@ async function main() {
   try {
     console.error("Starting note API MCP Server...");
 
-    // メールアドレスとパスワードが設定されていれば自動ログインを試行
-    if (NOTE_EMAIL && NOTE_PASSWORD) {
-      console.error("メールアドレスとパスワードからログイン試行中...");
+    // 既にセッションCookieが.envに設定されていればそれを使用（ログイン試行しない）
+    if (NOTE_SESSION_V5) {
+      console.error("✅ 既存のセッションCookie (NOTE_SESSION_V5) を使用します。");
+      localActiveSessionCookie = `_note_session_v5=${NOTE_SESSION_V5}`;
+      if (NOTE_XSRF_TOKEN) {
+        localActiveXsrfToken = NOTE_XSRF_TOKEN;
+      }
+    } else if (NOTE_EMAIL && NOTE_PASSWORD) {
+      // セッションがない場合のみ、メールアドレスとパスワードでログイン試行
+      console.error("セッションCookieがないため、メールアドレスとパスワードからログイン試行中...");
       const loginSuccess = await loginToNote();
       if (loginSuccess) {
         console.error("ログイン成功: セッションCookieを取得しました。");
