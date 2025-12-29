@@ -10,7 +10,7 @@ import { chromium } from "playwright";
 
 // 設定とユーティリティ
 import { env, authStatus } from "./config/environment.js";
-import { loginToNote, getActiveSessionCookie } from "./utils/auth.js";
+import { loginToNote, getActiveSessionCookie, loadSessionFromFile, validateSession, saveSessionToFile } from "./utils/auth.js";
 import { noteApiRequest } from "./utils/api-client.js";
 import { buildAuthHeaders, hasAuth } from "./utils/auth.js";
 import { convertMarkdownToNoteHtml } from "./utils/markdown-converter.js";
@@ -534,43 +534,36 @@ async function performAuthentication(): Promise<void> {
   console.error("🔐 認証処理を実行中...");
   console.error("◤◢◤◢◤◢◤◢◤◢◤◢◤◢");
 
-  const forceAuthRefresh = process.env.MCP_FORCE_AUTH_REFRESH === "true";
+  let sessionValid = false;
 
-  // 自動ログインの試行
-  if (authStatus.hasCookie && !forceAuthRefresh) {
-    console.error("✅ 既存の認証Cookieがあるため自動ログインをスキップします");
-  } else if (env.NOTE_EMAIL && env.NOTE_PASSWORD) {
-    let authenticated = false;
-
+  // Step 1: セッションファイルから読み込み
+  if (loadSessionFromFile()) {
+    // Step 2: セッションの有効性を確認
     try {
-      const loginSuccess = await withTimeout(
-        loginToNote(),
-        15000,
-        "loginToNoteがタイムアウトしました（15秒）"
+      sessionValid = await withTimeout(
+        validateSession(),
+        10000,
+        "セッション検証がタイムアウトしました"
       );
-      if (loginSuccess) {
-        console.error("✅ loginToNote成功: セッションCookieを取得しました");
-        authenticated = true;
-      } else {
-        console.error("❌ loginToNote失敗: メールアドレスまたはパスワードが正しくない可能性があります");
-      }
     } catch (error: any) {
-      console.error("⚠️ loginToNoteでエラー:", error.message);
+      console.error("⚠️ セッション検証エラー:", error.message);
     }
+  }
 
-    if (!authenticated) {
-      try {
-        // 60秒のタイムアウトを設定（Playwrightでストレージ状態を保存するため十分な時間を確保）
-        await withTimeout(
-          refreshSessionWithPlaywright({ headless: true, navigationTimeoutMs: 45000 }),
-          60000,
-          "Playwright認証がタイムアウトしました（60秒）"
-        );
-        console.error("✅ Playwrightでセッションを更新しました");
-        authenticated = true;
-      } catch (error: any) {
-        console.error("⚠️ Playwright自動ログインでエラーが発生しました:", error.message);
-      }
+  // Step 3: セッションが無効または存在しない場合
+  if (!sessionValid && env.NOTE_EMAIL && env.NOTE_PASSWORD) {
+    console.error("🔐 Playwrightでブラウザログインを実行します...");
+    try {
+      await withTimeout(
+        refreshSessionWithPlaywright({ headless: false, navigationTimeoutMs: 60000 }),
+        90000,
+        "Playwright認証がタイムアウトしました（90秒）"
+      );
+      console.error("✅ Playwrightでセッションを更新しました");
+      // セッションはplaywright-session.ts内でsaveSessionToFile()を呼んで保存済み
+      sessionValid = true;
+    } catch (error: any) {
+      console.error("⚠️ Playwright自動ログインでエラーが発生しました:", error.message);
     }
   }
 
