@@ -104,12 +104,12 @@ export async function refreshSessionWithPlaywright(
     let browser: ChromiumBrowser | null = null;
 
     try {
-        // Windowsではheadless: falseでブラウザが起動直後に閉じる問題があるため、
-        // 明示的にPLAYWRIGHT_HEADLESS=falseが設定されていない限りheadlessを使用
+        // ログイン時は headless=false をデフォルトに（2要素認証/CAPTCHA対応のため）
+        // 環境変数 PLAYWRIGHT_HEADLESS=true で明示的にheadlessモードを有効化可能
         const isWindows = process.platform === "win32";
-        const effectiveHeadless = isWindows && process.env.PLAYWRIGHT_HEADLESS !== "false"
+        const effectiveHeadless = process.env.PLAYWRIGHT_HEADLESS === "true"
             ? true
-            : merged.headless;
+            : false; // デフォルトはブラウザを表示
 
         console.error("🕹️ Playwrightでnote.comセッションを自動取得します...");
         console.error(
