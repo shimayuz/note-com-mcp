@@ -129,19 +129,25 @@ export async function refreshSessionWithPlaywright(
             );
         }
 
+        console.error("   Launching browser...");
         browser = await chromium.launch({
             headless: effectiveHeadless,
             args: browserArgs,
+            timeout: 30000, // 30秒でタイムアウト
         });
+        console.error("   ✓ Browser launched");
 
         const context = await browser.newContext({
             viewport: { width: 1280, height: 720 },
             userAgent:
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0 Safari/537.36",
         });
+        console.error("   ✓ Context created");
 
         const page = await context.newPage();
-        await page.goto("https://note.com/login", { waitUntil: "networkidle" });
+        console.error("   ✓ Page created, navigating to login...");
+        await page.goto("https://note.com/login", { waitUntil: "networkidle", timeout: 60000 });
+        console.error("   ✓ Login page loaded");
         await ensureEmailLoginForm(page, merged.navigationTimeoutMs);
 
         // note.comのログインフォームは2つの入力フィールドがある
