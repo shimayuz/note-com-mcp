@@ -312,43 +312,20 @@ export async function loginToNote(): Promise<boolean> {
 }
 
 // 認証ヘッダーを構築する関数 (CookieとXSRFトークン専用)
+// セッション情報はセッションファイル（~/.note-mcp-session.json）から読み込んだものを使用
 export function buildAuthHeaders(): { [key: string]: string } {
   const headers: { [key: string]: string } = {};
-  const cookies = [];
 
-  // 動的に取得したCookieがある場合は優先
+  // セッションファイルから読み込んだCookieを使用
   if (activeSessionCookie) {
-    cookies.push(activeSessionCookie);
-    if (env.DEBUG) console.error("Using dynamically obtained session cookie for Cookie header");
-    if (cookies.length > 0) {
-      headers["Cookie"] = cookies.join("; ");
-    }
-  } else if (process.env.NOTE_ALL_COOKIES) {
-    // すべてのCookieを使用（参照記事の方式）
-    // XSRF-TOKENはヘッダーで送るのでCookieからは除外
-    const cookiesWithoutXsrf = process.env.NOTE_ALL_COOKIES
-      .split('; ')
-      .filter(c => !c.startsWith('XSRF-TOKEN='))
-      .join('; ');
-    headers["Cookie"] = cookiesWithoutXsrf;
-    if (env.DEBUG) console.error("Using all cookies from .env file for Cookie header (XSRF-TOKEN excluded)");
-  } else if (env.NOTE_SESSION_V5) {
-    // .envファイルのセッションCookieを使用
-    cookies.push(`_note_session_v5=${env.NOTE_SESSION_V5}`);
-    if (env.DEBUG) console.error("Using session cookie from .env file for Cookie header");
-    if (cookies.length > 0) {
-      headers["Cookie"] = cookies.join("; ");
-    }
+    headers["Cookie"] = activeSessionCookie;
+    if (env.DEBUG) console.error("Using session cookie from session file");
   }
 
-  // XSRFトークンの設定 (ヘッダー用)
-  // 動的に取得したトークンを優先（ログインで取得した新しいトークンを使用）
+  // XSRFトークンの設定
   if (activeXsrfToken) {
     headers["X-XSRF-TOKEN"] = activeXsrfToken;
-    if (env.DEBUG) console.error("Using dynamically obtained XSRF token for X-XSRF-TOKEN header");
-  } else if (env.NOTE_XSRF_TOKEN) {
-    headers["X-XSRF-TOKEN"] = env.NOTE_XSRF_TOKEN;
-    if (env.DEBUG) console.error("Using XSRF token from .env file for X-XSRF-TOKEN header");
+    if (env.DEBUG) console.error("Using XSRF token from session file");
   }
 
   // User-Agentは常に設定
