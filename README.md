@@ -29,21 +29,38 @@ npm run build
 
 ### 2. 認証設定
 
-`.env` ファイルを作成してnote.comの認証情報を設定
+#### 方法A: 初回起動時に手動ログイン（推奨）
+
+`.env`ファイルなしで起動すると、Playwrightがブラウザを開きます。
+
+```bash
+npm run start
+```
+
+1. Chromiumブラウザが自動で開く
+2. note.comのログインページが表示される
+3. **手動でメールアドレスとパスワードを入力してログイン**
+4. ログイン完了を検知し、セッション情報を自動取得
+5. ブラウザが自動で閉じる
+6. MCPサーバーが起動完了
+
+#### 方法B: .envファイルで認証情報を設定
 
 ```bash
 cp .env.sample .env
 ```
 
-`.env` を編集（セッション情報はブラウザの開発者ツールから取得）
+`.env` を編集
 ```env
 NOTE_EMAIL=your-email@example.com
 NOTE_PASSWORD=your-password
+# 以下はオプション（自動取得される）
 NOTE_SESSION_V5=取得したセッションCookie
 NOTE_XSRF_TOKEN=取得したXSRFトークン
-NOTE_ALL_COOKIES=すべてのCookie
 NOTE_USER_ID=あなたのユーザーID
 ```
+
+**注意**: `NOTE_EMAIL`と`NOTE_PASSWORD`を設定すると、自動ログインを試行します。
 
 ### 3. 起動
 
