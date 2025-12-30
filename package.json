@@ -5,6 +5,8 @@
   "type": "module",
   "main": "build/note-mcp-server.js",
   "scripts": {
+    "setup": "bash scripts/setup.sh",
+    "setup:win": "powershell -ExecutionPolicy Bypass -File scripts/setup.ps1",
     "build": "tsc",
     "start": "node build/note-mcp-server.js",
     "start:refactored": "node build/note-mcp-server-refactored.js",

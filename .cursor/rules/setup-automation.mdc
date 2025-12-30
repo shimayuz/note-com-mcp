@@ -1,0 +1,231 @@
+---
+description: note MCP Server の自動セットアップルール
+globs: ["**/*"]
+alwaysApply: true
+---
+
+# note MCP Server セットアップ自動化ルール
+
+このルールは、Cursorが自動的にセットアップを実行するための指示を定義しています。
+
+## 📋 セットアップ指示の検出
+
+ユーザーが以下のような指示をした場合、自動セットアップを開始する：
+
+- 「セットアップして」
+- 「設定して」
+- 「インストールして」
+- 「環境構築して」
+- 「note MCP を使えるようにして」
+- 「初期設定をして」
+
+## 🔧 自動実行シーケンス
+
+### Phase 1: 環境確認（必須）
+
+```bash
+# Node.js バージョン確認
+node --version
+# → v18.0.0 以上であること
+
+# npm バージョン確認
+npm --version
+# → v9.0.0 以上であること
+
+# Git バージョン確認（オプション）
+git --version
+```
+
+**判定基準**:
+- Node.js v18未満 → ユーザーにアップグレードを案内
+- Node.js 未インストール → インストール方法を案内
+
+### Phase 2: 依存パッケージインストール
+
+```bash
+# パッケージインストール
+npm install
+```
+
+**成功判定**: `added XXX packages` が出力される
+
+**失敗時の対処**:
+```bash
+npm cache clean --force
+rm -rf node_modules package-lock.json
+npm install
+```
+
+### Phase 3: Playwright インストール
+
+```bash
+# Playwright ブラウザダウンロード
+npx playwright install
+```
+
+**Linux/WSL の場合は追加実行**:
+```bash
+npx playwright install-deps
+```
+
+### Phase 4: ビルド
+
+```bash
+# TypeScript コンパイル
+npm run build
+```
+
+**成功判定**: `build/note-mcp-server.js` が存在する
+
+**確認コマンド**:
+```bash
+ls -la build/note-mcp-server.js
+```
+
+### Phase 5: 環境変数設定
+
+```bash
+# .env ファイル作成
+cp .env.sample .env
+```
+
+**または**:
+```bash
+touch .env
+```
+
+### Phase 6: MCP クライアント設定
+
+#### プロジェクトパス取得
+```bash
+pwd
+```
+
+#### OS検出
+```bash
+uname -s
+```
+- `Darwin` → macOS
+- `Linux` → Linux
+- それ以外 → Windows
+
+#### macOS/Linux の場合
+```bash
+mkdir -p ~/.cursor
+```
+
+MCP設定ファイル `~/.cursor/mcp.json`:
+```json
+{
+  "mcpServers": {
+    "note-api": {
+      "command": "node",
+      "args": ["${PROJECT_PATH}/build/note-mcp-server.js"],
+      "env": {}
+    }
+  }
+}
+```
+
+#### Windows の場合
+```powershell
+New-Item -Path "$env:USERPROFILE\.cursor" -ItemType Directory -Force
+```
+
+MCP設定ファイル `%USERPROFILE%\.cursor\mcp.json`:
+```json
+{
+  "mcpServers": {
+    "note-api": {
+      "command": "node",
+      "args": ["${PROJECT_PATH}\\build\\note-mcp-server.js"],
+      "env": {}
+    }
+  }
+}
+```
+
+### Phase 7: 動作確認
+
+```bash
+npm run start
+```
+
+- ブラウザが開いたら手動でログイン
+- Ctrl+C で終了
+
+## ✅ 完了チェックリスト
+
+セットアップ完了後、以下を確認：
+
+1. [x] node --version → v18以上
+2. [x] npm --version → v9以上
+3. [x] npm install → 成功
+4. [x] npx playwright install → 成功
+5. [x] npm run build → 成功
+6. [x] build/note-mcp-server.js → 存在
+7. [x] ~/.cursor/mcp.json → 作成済み
+
+## 📝 完了報告テンプレート
+
+```
+◤◢◤◢◤◢◤◢◤◢◤◢◤◢
+✅ セットアップ完了
+
+📦 インストール済み:
+- npm パッケージ
+- Playwright ブラウザ
+
+🔨 ビルド済み:
+- build/note-mcp-server.js
+
+⚙️ MCP設定:
+- ~/.cursor/mcp.json 作成済み
+
+🚀 次のステップ:
+1. Cursor を再起動
+2. 「noteで記事を検索して」と試す
+◤◢◤◢◤◢◤◢◤◢◤◢◤◢
+```
+
+## 🚨 エラー対応
+
+### npm install 失敗
+
+```bash
+npm cache clean --force
+rm -rf node_modules package-lock.json
+npm install
+```
+
+### playwright install 失敗
+
+```bash
+npx playwright install-deps
+npx playwright install
+```
+
+### build 失敗
+
+```bash
+rm -rf node_modules
+npm install
+npm run build
+```
+
+### MCP が認識されない
+
+1. Cursor を完全終了
+2. 設定ファイル確認: `cat ~/.cursor/mcp.json`
+3. Cursor を再起動
+
+## 📁 重要ファイル
+
+| ファイル | 説明 |
+|---------|------|
+| `scripts/setup.sh` | Mac/Linux 用セットアップスクリプト |
+| `scripts/setup.ps1` | Windows 用セットアップスクリプト |
+| `docs/SETUP_GUIDE.md` | 詳細セットアップガイド |
+| `docs/CURSOR_AUTO_SETUP.md` | Cursor自動セットアップガイド |
+| `.env.sample` | 環境変数サンプル |
+| `.cursorrules` | Cursorルールファイル |
