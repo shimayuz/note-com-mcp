@@ -1,306 +1,196 @@
-# note MCP Server - Cursor Setup Rules
+# note MCP Server セットアップ指示書
 
-このファイルは、Cursorが自動的にnote MCP Serverのセットアップを実行するためのルールを定義しています。
+## 重要: このファイルを最初に読むこと
 
----
-
-## 🎯 目的
-
-非エンジニアのユーザーが「セットアップして」と指示するだけで、Cursorが以下のすべてのステップを自動実行できるようにする。
+ユーザーが「セットアップして」「設定して」「インストールして」「使えるようにして」と言ったら、以下の手順を**すべて順番に実行**してください。
 
 ---
 
-## 📋 セットアップ手順（Cursor実行用）
+## セットアップ手順（必ずこの順番で実行）
 
-### Phase 1: 環境確認
+### Step 1: Node.js確認
 
-1. Node.js のバージョン確認
-   ```bash
-   node --version
-   ```
-   - v18.0.0 以上であること
-   - インストールされていない場合は、ユーザーに案内
+```bash
+node --version
+```
 
-2. npm のバージョン確認
-   ```bash
-   npm --version
-   ```
-   - v9.0.0 以上であること
-
-3. Git のバージョン確認
-   ```bash
-   git --version
-   ```
-
-### Phase 2: 依存関係インストール
-
-1. npm パッケージインストール
-   ```bash
-   npm install
-   ```
-   - 成功: "added XXX packages" メッセージ
-   - 失敗: エラーメッセージを確認し対処
-
-2. Playwright ブラウザインストール
-   ```bash
-   npx playwright install
-   ```
-   - Chromium, Firefox, WebKit がダウンロードされる
-
-### Phase 3: ビルド
-
-1. TypeScript ビルド
-   ```bash
-   npm run build
-   ```
-   - エラーがないこと確認
-
-2. ビルド成果物確認
-   ```bash
-   ls build/
-   ```
-   - `note-mcp-server.js` が存在すること
-
-### Phase 4: 環境変数設定
-
-1. .env ファイル作成（存在しない場合）
-   ```bash
-   # Mac/Linux
-   touch .env
-   
-   # Windows PowerShell
-   New-Item -Path .env -ItemType File -Force
-   ```
-
-2. .env.sample から .env を作成（推奨）
-   ```bash
-   cp .env.sample .env
-   ```
-
-### Phase 5: 動作確認
-
-1. サーバー起動テスト
-   ```bash
-   npm run start
-   ```
-   - "MCP Server started" が表示されること
-   - Ctrl+C で終了
-
-### Phase 6: MCP クライアント設定
-
-#### Cursor の場合
-
-1. 現在のプロジェクトパスを取得
-   ```bash
-   pwd
-   ```
-
-2. MCP 設定ファイルのパス
-   - Mac: `~/.cursor/mcp.json`
-   - Windows: `%USERPROFILE%\.cursor\mcp.json`
-
-3. 設定内容生成（Mac用）
-   ```json
-   {
-     "mcpServers": {
-       "note-api": {
-         "command": "node",
-         "args": ["${PROJECT_PATH}/build/note-mcp-server.js"],
-         "env": {
-           "NOTE_EMAIL": "${NOTE_EMAIL}",
-           "NOTE_PASSWORD": "${NOTE_PASSWORD}",
-           "NOTE_USER_ID": "${NOTE_USER_ID}"
-         }
-       }
-     }
-   }
-   ```
-
-4. 設定内容生成（Windows用）
-   ```json
-   {
-     "mcpServers": {
-       "note-api": {
-         "command": "node",
-         "args": ["${PROJECT_PATH}\\build\\note-mcp-server.js"],
-         "env": {
-           "NOTE_EMAIL": "${NOTE_EMAIL}",
-           "NOTE_PASSWORD": "${NOTE_PASSWORD}",
-           "NOTE_USER_ID": "${NOTE_USER_ID}"
-         }
-       }
-     }
-   }
-   ```
+**v18未満またはエラーの場合は停止して以下を案内：**
+- Mac: `brew install node`
+- Windows: https://nodejs.org/ からダウンロード
 
 ---
 
-## 🔧 コマンドリファレンス
+### Step 2: npmパッケージインストール
 
-### 基本コマンド
+```bash
+npm install
+```
+
+**エラー時：**
+```bash
+npm cache clean --force
+rm -rf node_modules package-lock.json
+npm install
+```
+
+---
+
+### Step 3: Playwrightインストール
+
+```bash
+npx playwright install
+```
+
+---
+
+### Step 4: ビルド
+
+```bash
+npm run build
+```
+
+**確認：**
+```bash
+ls build/note-mcp-server.js
+```
+
+ファイルが存在すればOK。
+
+---
+
+### Step 5: プロジェクトパス取得
+
+```bash
+pwd
+```
+
+この出力を覚えておく（例: `/Users/username/note-com-mcp`）
+
+---
+
+### Step 6: OS判定
+
+```bash
+uname -s 2>/dev/null || echo "Windows"
+```
+
+- `Darwin` → Mac
+- `Linux` → Linux  
+- `Windows` または MINGW → Windows
+
+---
+
+### Step 7: MCP設定ファイル作成
+
+#### Macの場合
+
+```bash
+mkdir -p ~/.cursor
+```
+
+以下の内容で `~/.cursor/mcp.json` を作成：
+
+```json
+{
+  "mcpServers": {
+    "note-api": {
+      "command": "node",
+      "args": ["ここにStep5のパス/build/note-mcp-server.js"]
+    }
+  }
+}
+```
+
+**重要: `ここにStep5のパス` を実際のパスに置き換える**
+
+#### Windowsの場合
+
+以下の内容で `%USERPROFILE%\.cursor\mcp.json` を作成：
+
+```json
+{
+  "mcpServers": {
+    "note-api": {
+      "command": "node",
+      "args": ["C:\\Users\\ユーザー名\\note-com-mcp\\build\\note-mcp-server.js"]
+    }
+  }
+}
+```
+
+**重要: パスを実際の値に置き換える。バックスラッシュは `\\` でエスケープ**
+
+---
+
+### Step 8: 動作確認
+
+```bash
+npm run start
+```
+
+- ブラウザが開いたらnote.comにログイン
+- ログイン後、自動でセッション取得
+- `Ctrl+C` で終了
+
+---
+
+### Step 9: 完了報告
+
+以下のように報告する：
+
+```
+◤◢◤◢◤◢◤◢◤◢◤◢◤◢
+✅ セットアップ完了！
+
+次のステップ：
+1. Cursorを再起動してください
+2. 「noteで記事を検索して」と試してください
+
+認証について：
+初回はブラウザが開くのでnote.comにログインしてください
+◤◢◤◢◤◢◤◢◤◢◤◢◤◢
+```
+
+---
+
+## トラブルシューティング
+
+### npm install失敗
+```bash
+npm cache clean --force
+rm -rf node_modules package-lock.json
+npm install
+```
+
+### playwright install失敗
+```bash
+npx playwright install-deps
+npx playwright install
+```
+
+### build失敗
+```bash
+rm -rf node_modules
+npm install
+npm run build
+```
+
+---
+
+## コマンド早見表
 
 | 目的 | コマンド |
 |------|---------|
 | インストール | `npm install` |
 | ビルド | `npm run build` |
-| 起動（ローカル） | `npm run start` |
-| 起動（HTTP） | `npm run start:http` |
-| 開発モード | `npm run dev:watch` |
-
-### Playwright コマンド
-
-| 目的 | コマンド |
-|------|---------|
-| ブラウザインストール | `npx playwright install` |
-| 依存ライブラリインストール | `npx playwright install-deps` |
-| セッションキャプチャ | `npm run capture:session` |
+| 起動 | `npm run start` |
+| HTTP起動 | `npm run start:http` |
 
 ---
 
-## 🖥️ OS別コマンド
+## 注意事項
 
-### ディレクトリ作成
-
-```bash
-# Mac/Linux
-mkdir -p ~/.cursor
-
-# Windows PowerShell
-New-Item -Path "$env:USERPROFILE\.cursor" -ItemType Directory -Force
-```
-
-### ファイル作成
-
-```bash
-# Mac/Linux
-touch filename
-
-# Windows PowerShell
-New-Item -Path filename -ItemType File -Force
-```
-
-### 現在のパス確認
-
-```bash
-# Mac/Linux/Windows
-pwd
-```
-
-### ホームディレクトリ移動
-
-```bash
-# Mac/Linux
-cd ~
-
-# Windows PowerShell
-cd $env:USERPROFILE
-```
-
----
-
-## ✅ セットアップ完了チェックリスト
-
-Cursorは以下の項目を順番に確認・実行する：
-
-1. [ ] `node --version` → v18.0.0 以上
-2. [ ] `npm --version` → v9.0.0 以上
-3. [ ] `git --version` → インストール済み
-4. [ ] `npm install` → 成功
-5. [ ] `npx playwright install` → 成功
-6. [ ] `npm run build` → 成功
-7. [ ] `ls build/note-mcp-server.js` → ファイル存在
-8. [ ] `.env` ファイル設定済み（オプション）
-9. [ ] `npm run start` → 起動成功
-10. [ ] MCP設定ファイル作成済み
-
----
-
-## 🚨 エラーハンドリング
-
-### npm install 失敗時
-
-```bash
-# キャッシュクリア
-npm cache clean --force
-
-# 再インストール
-rm -rf node_modules package-lock.json
-npm install
-```
-
-### playwright install 失敗時
-
-```bash
-# 依存ライブラリインストール（Linux/WSL）
-npx playwright install-deps
-
-# 再インストール
-npx playwright install
-```
-
-### build 失敗時
-
-```bash
-# node_modules 再インストール
-rm -rf node_modules
-npm install
-
-# 再ビルド
-npm run build
-```
-
-### 認証エラー時
-
-```bash
-# セッション再取得（ブラウザログイン）
-rm .env
-npm run start
-```
-
----
-
-## 📁 重要なファイルパス
-
-| ファイル | 説明 |
-|---------|------|
-| `package.json` | プロジェクト設定 |
-| `.env` | 環境変数（認証情報） |
-| `.env.sample` | 環境変数サンプル |
-| `build/note-mcp-server.js` | ビルド済みサーバー |
-| `src/note-mcp-server.ts` | ソースコード |
-| `docs/SETUP_GUIDE.md` | 詳細セットアップガイド |
-
----
-
-## 🔐 認証設定
-
-### 方法A: ブラウザログイン（推奨）
-
-1. `.env` ファイルなしで起動
-2. ブラウザが自動で開く
-3. 手動でログイン
-4. セッション情報が自動保存
-
-### 方法B: .env ファイル
-
-```env
-NOTE_EMAIL=your-email@example.com
-NOTE_PASSWORD=your-password
-NOTE_USER_ID=your-user-id
-```
-
----
-
-## 📝 ユーザーへの説明テンプレート
-
-セットアップ完了後、以下のように説明する：
-
-```
-セットアップが完了しました！
-
-以下のコマンドでサーバーを起動できます：
-npm run start
-
-Cursorでnote.comの記事を検索・投稿できるようになりました。
-例：「noteで『プログラミング』の記事を検索して」
-```
+- 各Stepでエラーが出たら次に進まず、まずエラーを解決する
+- MCP設定のパスは絶対パスで指定する
+- Windowsのパスはバックスラッシュを `\\` でエスケープする
+- セットアップ完了後は必ずCursorを再起動する
