@@ -200,20 +200,44 @@ export async function refreshSessionWithPlaywright(
         } else {
             // 手動ログイン: ユーザーがログインするまで待機
             console.error("📝 ブラウザでnote.comにログインしてください...");
-            console.error("   ログイン完了後、自動的にセッション情報を取得します。");
+            console.error("   1. メールアドレスとパスワードを入力");
+            console.error("   2. ログインボタンをクリック");
+            console.error("   3. ログイン完了まで待機します（最大5分）");
+            console.error("");
 
-            // ログイン完了を検知（URLがログインページから変わるか、セッションCookieが設定されるまで待機）
-            await page.waitForFunction(
-                () => {
-                    return !window.location.href.includes('/login') ||
-                        document.cookie.includes('_note_session_v5');
-                },
-                { timeout: merged.navigationTimeoutMs }
-            );
+            // ログイン完了を検知（URLが/loginから変わるまでポーリング）
+            let loginComplete = false;
+            const startTime = Date.now();
+            const maxWaitTime = merged.navigationTimeoutMs;
 
-            // ログイン後のページ遷移を待機
+            while (!loginComplete && (Date.now() - startTime) < maxWaitTime) {
+                await new Promise(resolve => setTimeout(resolve, 2000)); // 2秒ごとにチェック
+                
+                try {
+                    const currentUrl = page.url();
+                    if (!currentUrl.includes('/login')) {
+                        loginComplete = true;
+                        console.error("✅ ログインを検知しました！");
+                    } else {
+                        // 進行状況を表示
+                        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                        process.stderr.write(`\r⏳ 待機中... (${elapsed}秒経過)`);
+                    }
+                } catch {
+                    // ページが閉じられた場合
+                    break;
+                }
+            }
+
+            if (!loginComplete) {
+                throw new Error("ログインタイムアウト: 指定時間内にログインが完了しませんでした");
+            }
+
+            console.error(""); // 改行
+            console.error("✅ セッション情報を取得中...");
+
+            // ログイン後のページ安定を待機
             await page.waitForLoadState('networkidle');
-            console.error("✅ ログインを検知しました。セッション情報を取得中...");
         }
 
         const cookies = await context.cookies();
