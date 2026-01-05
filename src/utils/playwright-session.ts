@@ -8,88 +8,9 @@ import {
 import path from "path";
 import os from "os";
 import fs from "fs";
-import { fileURLToPath } from "url";
-
-// ESMでの__dirnameの代替
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // ブラウザストレージ状態ファイルのパス
 const STORAGE_STATE_PATH = path.join(os.tmpdir(), 'note-playwright-state.json');
-
-// .envファイルのパスを取得
-function getEnvFilePath(): string {
-    // プロジェクトルートの.envファイルを探す
-    const possiblePaths = [
-        path.resolve(__dirname, '../../.env'),
-        path.resolve(__dirname, '../.env'),
-        path.resolve(process.cwd(), '.env'),
-    ];
-
-    for (const envPath of possiblePaths) {
-        if (fs.existsSync(envPath)) {
-            return envPath;
-        }
-    }
-
-    // 存在しない場合はプロジェクトルートに作成
-    return path.resolve(__dirname, '../../.env');
-}
-
-/**
- * セッション情報を.envファイルに永続化する
- */
-export function persistSessionToEnv(sessionData: {
-    sessionV5?: string;
-    xsrfToken?: string;
-    userId?: string;
-    allCookies?: string;
-}): void {
-    const envPath = getEnvFilePath();
-
-    try {
-        let envContent = '';
-
-        // 既存の.envファイルを読み込む
-        if (fs.existsSync(envPath)) {
-            envContent = fs.readFileSync(envPath, 'utf-8');
-        }
-
-        // 各セッション情報を更新または追加
-        const updates: { key: string; value: string }[] = [];
-
-        if (sessionData.sessionV5) {
-            updates.push({ key: 'NOTE_SESSION_V5', value: sessionData.sessionV5 });
-        }
-        if (sessionData.xsrfToken) {
-            updates.push({ key: 'NOTE_XSRF_TOKEN', value: sessionData.xsrfToken });
-        }
-        if (sessionData.userId) {
-            updates.push({ key: 'NOTE_USER_ID', value: sessionData.userId });
-        }
-        if (sessionData.allCookies) {
-            updates.push({ key: 'NOTE_ALL_COOKIES', value: sessionData.allCookies });
-        }
-
-        for (const { key, value } of updates) {
-            const regex = new RegExp(`^${key}=.*$`, 'm');
-            if (regex.test(envContent)) {
-                // 既存のキーを更新
-                envContent = envContent.replace(regex, `${key}=${value}`);
-            } else {
-                // 新しいキーを追加
-                envContent = envContent.trimEnd() + `\n${key}=${value}\n`;
-            }
-        }
-
-        // .envファイルに書き込む
-        fs.writeFileSync(envPath, envContent, 'utf-8');
-        console.error(`✅ セッション情報を.envファイルに保存しました: ${envPath}`);
-
-    } catch (error) {
-        console.error(`⚠️ .envファイルへの保存に失敗しました: ${error}`);
-    }
-}
 
 /**
  * 保存済みのストレージ状態ファイルのパスを取得
@@ -176,11 +97,6 @@ export async function refreshSessionWithPlaywright(
 ): Promise<void> {
     const hasCredentials = env.NOTE_EMAIL && env.NOTE_PASSWORD;
     const merged = { ...DEFAULT_OPTIONS, ...(options || {}) };
-
-    // 手動ログインが必要な場合は、headlessをfalseに強制（ユーザーがブラウザを見れるようにする）
-    if (!hasCredentials) {
-        merged.headless = false;
-    }
 
     let browser: ChromiumBrowser | null = null;
 
@@ -296,7 +212,7 @@ export async function refreshSessionWithPlaywright(
 
             while (!loginComplete && (Date.now() - startTime) < maxWaitTime) {
                 await new Promise(resolve => setTimeout(resolve, 2000)); // 2秒ごとにチェック
-
+                
                 try {
                     const currentUrl = page.url();
                     if (!currentUrl.includes('/login')) {
@@ -367,15 +283,6 @@ export async function refreshSessionWithPlaywright(
         // ストレージ状態を保存（次回のPlaywright起動時に再利用）
         await context.storageState({ path: STORAGE_STATE_PATH });
         console.error(`✅ ストレージ状態を保存しました: ${STORAGE_STATE_PATH}`);
-
-        // .envファイルにセッション情報を永続化
-        const xsrfValue = xsrfCookie ? decodeURIComponent(xsrfCookie.value) : undefined;
-        persistSessionToEnv({
-            sessionV5: sessionCookie.value,
-            xsrfToken: xsrfValue,
-            userId: process.env.NOTE_USER_ID,
-            allCookies: concatenatedCookies,
-        });
 
         console.error("✅ Playwrightでセッションを更新しました");
     } catch (error) {
