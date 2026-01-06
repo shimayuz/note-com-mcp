@@ -202,22 +202,29 @@ export async function refreshSessionWithPlaywright(
             console.error("📝 ブラウザでnote.comにログインしてください...");
             console.error("   1. メールアドレスとパスワードを入力");
             console.error("   2. ログインボタンをクリック");
-            console.error("   3. ログイン完了まで待機します（最大5分）");
+            console.error("   3. ログイン完了後、自動でセッションを取得します");
             console.error("");
 
-            // ログイン完了を検知（URLが/loginから変わるまでポーリング）
+            // ログイン完了を検知（URLが/loginから変わる OR セッションCookieが存在する）
             let loginComplete = false;
             const startTime = Date.now();
-            const maxWaitTime = merged.navigationTimeoutMs;
+            const maxWaitTime = 300000; // 5分固定
 
             while (!loginComplete && (Date.now() - startTime) < maxWaitTime) {
-                await new Promise(resolve => setTimeout(resolve, 2000)); // 2秒ごとにチェック
-                
+                await new Promise(resolve => setTimeout(resolve, 1000)); // 1秒ごとにチェック
+
                 try {
+                    // URLチェック
                     const currentUrl = page.url();
-                    if (!currentUrl.includes('/login')) {
+                    const urlChanged = !currentUrl.includes('/login');
+
+                    // Cookieチェック
+                    const cookies = await context.cookies();
+                    const hasSessionCookie = cookies.some(c => c.name === "_note_session_v5");
+
+                    if (urlChanged || hasSessionCookie) {
                         loginComplete = true;
-                        console.error("✅ ログインを検知しました！");
+                        console.error("\n✅ ログインを検知しました！");
                     } else {
                         // 進行状況を表示
                         const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -233,11 +240,14 @@ export async function refreshSessionWithPlaywright(
                 throw new Error("ログインタイムアウト: 指定時間内にログインが完了しませんでした");
             }
 
-            console.error(""); // 改行
             console.error("✅ セッション情報を取得中...");
 
             // ログイン後のページ安定を待機
-            await page.waitForLoadState('networkidle');
+            try {
+                await page.waitForLoadState('networkidle', { timeout: 10000 });
+            } catch {
+                // タイムアウトしても続行
+            }
         }
 
         const cookies = await context.cookies();
