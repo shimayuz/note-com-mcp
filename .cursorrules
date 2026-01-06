@@ -69,12 +69,12 @@ ls build/note-mcp-server.js
 ### Step 5: 環境変数設定
 
 ```bash
-# 空の .env ファイルを作成（認証情報は後でブラウザログインで自動取得）
-touch .env
+# .env.sample から .env を生成
+cp .env.sample .env
 ```
 
-> **Note**: `.env`に`NOTE_EMAIL`や`NOTE_PASSWORD`を設定する必要はありません。
-> Cursor再起動後、初回のMCPツール呼び出し時にブラウザが開き、手動ログインでセッションを取得します。
+> **Note**: 認証情報の手動設定は不要です。
+> Cursor再起動後、初回のMCPツール呼び出し時にブラウザが開き、ログインすると自動でセッションが取得されます。
 
 ---
 
