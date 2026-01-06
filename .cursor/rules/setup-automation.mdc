@@ -40,6 +40,14 @@ git --version
 - Node.js v18未満 → ユーザーにアップグレードを案内
 - Node.js 未インストール → インストール方法を案内
 
+**Windowsの場合は文字化け防止のため、最初に以下を実行**:
+```powershell
+# PowerShellでUTF-8を有効化
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+chcp 65001
+```
+
 ### Phase 2: 依存パッケージインストール
 
 ```bash
@@ -126,22 +134,29 @@ MCP設定ファイル `~/.cursor/mcp.json`:
 ```
 
 #### Windows の場合
-```powershell
-New-Item -Path "$env:USERPROFILE\.cursor" -ItemType Directory -Force
-```
 
-MCP設定ファイル `%USERPROFILE%\.cursor\mcp.json`:
-```json
+```powershell
+# ディレクトリ作成
+New-Item -Path "$env:USERPROFILE\.cursor" -ItemType Directory -Force
+
+# プロジェクトパス取得
+$projectPath = (Get-Location).Path -replace '\\', '\\\\'
+
+# MCP設定ファイル作成（UTF-8で保存）
+$config = @"
 {
   "mcpServers": {
     "note-api": {
       "command": "node",
-      "args": ["${PROJECT_PATH}\\build\\note-mcp-server.js"],
-      "env": {}
+      "args": ["$projectPath\\build\\note-mcp-server.js"]
     }
   }
 }
+"@
+$config | Out-File -FilePath "$env:USERPROFILE\.cursor\mcp.json" -Encoding utf8
 ```
+
+**重要**: 上記コマンドをプロジェクトディレクトリで実行すること
 
 ## ✅ 完了チェックリスト
 

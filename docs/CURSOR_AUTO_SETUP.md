@@ -40,6 +40,14 @@ git --version
 - npm v9.0.0 以上
 - Git がインストール済み
 
+**Windowsの場合は文字化け防止のため、最初に以下を実行**:
+```powershell
+# PowerShellでUTF-8を有効化
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+chcp 65001
+```
+
 ---
 
 ### ステップ 2: 依存パッケージインストール
@@ -166,21 +174,24 @@ sed -i '' "s|PROJECT_PATH|$(pwd)|g" ~/.cursor/mcp.json
 # ディレクトリ作成
 New-Item -Path "$env:USERPROFILE\.cursor" -ItemType Directory -Force
 
-# 設定ファイル作成
+# プロジェクトパス取得
 $projectPath = (Get-Location).Path -replace '\\', '\\\\'
+
+# MCP設定ファイル作成（UTF-8で保存）
 $config = @"
 {
   "mcpServers": {
     "note-api": {
       "command": "node",
-      "args": ["$projectPath\\build\\note-mcp-server.js"],
-      "env": {}
+      "args": ["$projectPath\\build\\note-mcp-server.js"]
     }
   }
 }
 "@
 $config | Out-File -FilePath "$env:USERPROFILE\.cursor\mcp.json" -Encoding utf8
 ```
+
+**重要**: 上記コマンドをプロジェクトディレクトリで実行すること
 
 ---
 
