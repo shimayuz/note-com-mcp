@@ -265,13 +265,23 @@ export async function refreshSessionWithPlaywright(
         process.env.NOTE_ALL_COOKIES = concatenatedCookies;
 
         // 追加でユーザーIDも取得（LOG用途）
+        // page.goto() ではなく page.evaluate() + fetch() を使用
+        // page.goto() を使うとAPIがHTMLを返す場合があるため
         try {
-            const response = await page.goto("https://note.com/api/v2/session", {
-                waitUntil: "networkidle",
-                timeout: merged.navigationTimeoutMs,
+            const sessionData = await page.evaluate(async () => {
+                const res = await fetch("https://note.com/api/v2/session", {
+                    credentials: "include",
+                });
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
+                const contentType = res.headers.get("content-type") || "";
+                if (!contentType.includes("application/json")) {
+                    throw new Error(`Unexpected content-type: ${contentType}`);
+                }
+                return res.json();
             });
-            const json = await response?.json();
-            const userKey = json?.data?.user?.urlname || json?.data?.user?.id;
+            const userKey = sessionData?.data?.user?.urlname || sessionData?.data?.user?.id;
             if (userKey) {
                 setActiveUserKey(userKey);
                 process.env.NOTE_USER_ID = userKey;
