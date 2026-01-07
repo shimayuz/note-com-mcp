@@ -208,7 +208,7 @@ export async function refreshSessionWithPlaywright(
             // ログイン完了を検知（URLが/loginから変わる OR セッションCookieが存在する）
             let loginComplete = false;
             const startTime = Date.now();
-            const maxWaitTime = 300000; // 5分固定
+            const maxWaitTime = 150000; // 2.5分
 
             while (!loginComplete && (Date.now() - startTime) < maxWaitTime) {
                 await new Promise(resolve => setTimeout(resolve, 1000)); // 1秒ごとにチェック
@@ -245,9 +245,9 @@ export async function refreshSessionWithPlaywright(
 
             console.error("✅ セッション情報を取得中...");
 
-            // ログイン後のページ安定を待機
+            // ログイン後のページ安定を短時間待機（最大3秒）
             try {
-                await page.waitForLoadState('networkidle', { timeout: 10000 });
+                await page.waitForLoadState('networkidle', { timeout: 3000 });
             } catch {
                 // タイムアウトしても続行
             }

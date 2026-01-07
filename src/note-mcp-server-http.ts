@@ -580,7 +580,7 @@ async function performAuthentication(): Promise<void> {
     console.error("📝 認証情報が設定されていません。Playwrightでブラウザログインを試行します...");
     console.error("   ブラウザが開いたら、note.comにログインしてください。");
     try {
-      await refreshSessionWithPlaywright({ headless: false, navigationTimeoutMs: 300000 });
+      await refreshSessionWithPlaywright({ headless: false, navigationTimeoutMs: 150000 });
       console.error("✅ Playwrightでのログインに成功しました");
       authenticated = true;
     } catch (error: any) {
