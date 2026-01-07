@@ -216,25 +216,47 @@ export async function refreshSessionWithPlaywright(
                 try {
                     // URLチェック
                     const currentUrl = page.url();
-                    // /login を含まない、かつ note.com ドメインであること
-                    const urlChanged = !currentUrl.includes('/login') && currentUrl.includes('note.com');
+                    // ログインページから離れたかどうか（/login で始まるパスではない）
+                    const isLoginPage = new URL(currentUrl).pathname.startsWith('/login');
+                    const isNoteComDomain = currentUrl.includes('note.com');
 
                     // Cookieチェック（note.comドメインのCookieを取得）
                     const cookies = await context.cookies('https://note.com');
-                    const hasSessionCookie = cookies.some(c => c.name === "_note_session_v5");
+                    const sessionCookie = cookies.find(c => c.name === "_note_session_v5");
+                    const hasSessionCookie = sessionCookie !== undefined && sessionCookie.value !== "";
 
-                    if (urlChanged || hasSessionCookie) {
+                    // 経過時間
+                    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+
+                    // デバッグ情報（5秒ごと）
+                    if (elapsed % 5 === 0 && elapsed > 0) {
+                        console.error(`⏳ ログイン待機中... (${elapsed}秒経過)`);
+                        console.error(`   URL: ${currentUrl}`);
+                        console.error(`   isLoginPage: ${isLoginPage}, hasSessionCookie: ${hasSessionCookie}`);
+                    }
+
+                    // ログイン完了条件: セッションCookieがある、またはログインページから離れた
+                    if (hasSessionCookie) {
                         loginComplete = true;
-                        console.error("✅ ログインを検知しました！");
-                    } else {
-                        // 進行状況を表示（10秒ごと）
-                        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-                        if (elapsed % 10 === 0 && elapsed > 0) {
-                            console.error(`⏳ ログイン待機中... (${elapsed}秒経過)`);
+                        console.error("✅ ログインを検知しました！（セッションCookie取得）");
+                    } else if (!isLoginPage && isNoteComDomain) {
+                        // Cookieがなくてもログインページから離れていれば、少し待ってから再確認
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        const cookiesRetry = await context.cookies('https://note.com');
+                        const sessionCookieRetry = cookiesRetry.find(c => c.name === "_note_session_v5");
+                        if (sessionCookieRetry && sessionCookieRetry.value !== "") {
+                            loginComplete = true;
+                            console.error("✅ ログインを検知しました！（リダイレクト後にCookie取得）");
+                        } else {
+                            // それでもCookieがない場合はURLベースで判定
+                            loginComplete = true;
+                            console.error("✅ ログインを検知しました！（URLリダイレクト検知）");
+                            console.error("⚠️ 注意: セッションCookieが見つかりませんでした。認証に問題がある可能性があります。");
                         }
                     }
-                } catch {
+                } catch (error) {
                     // ページが閉じられた場合
+                    console.error("⚠️ ページ状態の確認中にエラー:", error);
                     break;
                 }
             }
