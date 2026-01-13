@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.7.0",
+    "@notionhq/client": "^2.2.14",
     "dotenv": "^16.3.1",
     "node-fetch": "^3.3.2",
     "playwright": "^1.56.1",

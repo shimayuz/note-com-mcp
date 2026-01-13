@@ -20,6 +20,7 @@ export interface Environment {
   NOTE_USER_ID: string;
   MCP_HTTP_PORT?: string;
   MCP_HTTP_HOST?: string;
+  NOTION_TOKEN: string;
 }
 
 export const env: Environment = {
@@ -32,6 +33,7 @@ export const env: Environment = {
   NOTE_USER_ID: process.env.NOTE_USER_ID || "",
   MCP_HTTP_PORT: process.env.MCP_HTTP_PORT || "3000",
   MCP_HTTP_HOST: process.env.MCP_HTTP_HOST || "127.0.0.1",
+  NOTION_TOKEN: process.env.NOTION_TOKEN || "",
 };
 
 // 認証状態の判定

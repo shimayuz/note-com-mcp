@@ -10,6 +10,7 @@
  * - 番号付きリスト → ol/li
  * - コードブロック → pre/code
  * - 引用 → blockquote
+ * - 段落内の単一改行 → <br>（同一パラグラフ内の改行を維持）
  */
 
 /**
@@ -37,7 +38,31 @@ function addUUIDAttributes(html: string): string {
 }
 
 /**
+ * 行が特殊要素（見出し、リスト、引用など）かどうかを判定
+ */
+function isSpecialLine(line: string): boolean {
+    const trimmed = line.trim();
+    if (!trimmed) return false;
+    
+    // 見出し
+    if (/^#{1,6} /.test(trimmed)) return true;
+    // 箇条書き
+    if (/^[\-\*] /.test(trimmed)) return true;
+    // 番号付きリスト
+    if (/^\d+\. /.test(trimmed)) return true;
+    // 引用
+    if (/^> /.test(trimmed)) return true;
+    // 水平線
+    if (/^-{3,}$/.test(trimmed) || /^\*{3,}$/.test(trimmed)) return true;
+    // コードブロックプレースホルダー
+    if (/^__CODE_BLOCK_\d+__$/.test(trimmed)) return true;
+    
+    return false;
+}
+
+/**
  * MarkdownをHTMLに変換する（note.com最適化版）
+ * 段落内の単一改行は<br>に変換し、空行でパラグラフを区切る
  */
 export function convertMarkdownToHtml(markdown: string): string {
     if (!markdown) return "";
@@ -63,164 +88,211 @@ export function convertMarkdownToHtml(markdown: string): string {
         return `__INLINE_CODE_${index}__`;
     });
 
-    // 行単位で処理
-    const lines = text.split('\n');
+    // 空行で段落を分割
+    const paragraphs = text.split(/\n\n+/);
     const result: string[] = [];
-    let inList: 'ul' | 'ol' | null = null;
-    let inBlockquote = false;
-    let listItems: string[] = [];
-    let blockquoteLines: string[] = [];
 
-    for (let i = 0; i < lines.length; i++) {
-        let line = lines[i];
+    for (const paragraph of paragraphs) {
+        const trimmedPara = paragraph.trim();
+        if (!trimmedPara) continue;
 
-        // 空行の処理
-        if (line.trim() === '') {
-            // リストを閉じる
+        const lines = trimmedPara.split('\n');
+        
+        // 段落内のすべての行が特殊要素かどうかをチェック
+        const hasSpecialLines = lines.some(line => isSpecialLine(line));
+        
+        if (hasSpecialLines) {
+            // 特殊要素を含む段落は行単位で処理
+            let inList: 'ul' | 'ol' | null = null;
+            let listItems: string[] = [];
+            let inBlockquote = false;
+            let blockquoteLines: string[] = [];
+
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const trimmedLine = line.trim();
+                
+                if (!trimmedLine) continue;
+
+                // コードブロックプレースホルダー
+                if (trimmedLine.match(/^__CODE_BLOCK_\d+__$/)) {
+                    if (inList) {
+                        result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
+                        listItems = [];
+                        inList = null;
+                    }
+                    if (inBlockquote) {
+                        result.push(`<blockquote>${blockquoteLines.join('<br>')}</blockquote>`);
+                        blockquoteLines = [];
+                        inBlockquote = false;
+                    }
+                    const index = parseInt(trimmedLine.match(/\d+/)![0]);
+                    result.push(codeBlocks[index]);
+                    continue;
+                }
+
+                // 見出しの処理（Obsidian→note.comルール適用）
+                // H1 → 大見出し (h2)
+                const h1Match = trimmedLine.match(/^# (.+)$/);
+                if (h1Match) {
+                    if (inList) {
+                        result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
+                        listItems = [];
+                        inList = null;
+                    }
+                    if (inBlockquote) {
+                        result.push(`<blockquote>${blockquoteLines.join('<br>')}</blockquote>`);
+                        blockquoteLines = [];
+                        inBlockquote = false;
+                    }
+                    result.push(`<h2>${processInline(h1Match[1])}</h2>`);
+                    continue;
+                }
+
+                // H2 → 大見出し (h2)
+                const h2Match = trimmedLine.match(/^## (.+)$/);
+                if (h2Match) {
+                    if (inList) {
+                        result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
+                        listItems = [];
+                        inList = null;
+                    }
+                    if (inBlockquote) {
+                        result.push(`<blockquote>${blockquoteLines.join('<br>')}</blockquote>`);
+                        blockquoteLines = [];
+                        inBlockquote = false;
+                    }
+                    result.push(`<h2>${processInline(h2Match[1])}</h2>`);
+                    continue;
+                }
+
+                // H3 → 小見出し (h3)
+                const h3Match = trimmedLine.match(/^### (.+)$/);
+                if (h3Match) {
+                    if (inList) {
+                        result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
+                        listItems = [];
+                        inList = null;
+                    }
+                    if (inBlockquote) {
+                        result.push(`<blockquote>${blockquoteLines.join('<br>')}</blockquote>`);
+                        blockquoteLines = [];
+                        inBlockquote = false;
+                    }
+                    result.push(`<h3>${processInline(h3Match[1])}</h3>`);
+                    continue;
+                }
+
+                // H4以降 → 強調 (strong)
+                const h4PlusMatch = trimmedLine.match(/^#{4,6} (.+)$/);
+                if (h4PlusMatch) {
+                    if (inList) {
+                        result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
+                        listItems = [];
+                        inList = null;
+                    }
+                    if (inBlockquote) {
+                        result.push(`<blockquote>${blockquoteLines.join('<br>')}</blockquote>`);
+                        blockquoteLines = [];
+                        inBlockquote = false;
+                    }
+                    result.push(`<p><strong>${processInline(h4PlusMatch[1])}</strong></p>`);
+                    continue;
+                }
+
+                // 水平線
+                if (trimmedLine.match(/^-{3,}$/) || trimmedLine.match(/^\*{3,}$/)) {
+                    if (inList) {
+                        result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
+                        listItems = [];
+                        inList = null;
+                    }
+                    if (inBlockquote) {
+                        result.push(`<blockquote>${blockquoteLines.join('<br>')}</blockquote>`);
+                        blockquoteLines = [];
+                        inBlockquote = false;
+                    }
+                    result.push('<hr>');
+                    continue;
+                }
+
+                // 引用の処理
+                const quoteMatch = trimmedLine.match(/^> (.+)$/);
+                if (quoteMatch) {
+                    if (inList) {
+                        result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
+                        listItems = [];
+                        inList = null;
+                    }
+                    inBlockquote = true;
+                    blockquoteLines.push(processInline(quoteMatch[1]));
+                    continue;
+                } else if (inBlockquote) {
+                    result.push(`<blockquote>${blockquoteLines.join('<br>')}</blockquote>`);
+                    blockquoteLines = [];
+                    inBlockquote = false;
+                }
+
+                // 箇条書きリストの処理
+                const ulMatch = trimmedLine.match(/^[\-\*] (.+)$/);
+                if (ulMatch) {
+                    if (inBlockquote) {
+                        result.push(`<blockquote>${blockquoteLines.join('<br>')}</blockquote>`);
+                        blockquoteLines = [];
+                        inBlockquote = false;
+                    }
+                    if (inList === 'ol') {
+                        result.push(`<ol>${listItems.map(item => `<li>${item}</li>`).join('')}</ol>`);
+                        listItems = [];
+                    }
+                    inList = 'ul';
+                    listItems.push(processInline(ulMatch[1]));
+                    continue;
+                }
+
+                // 番号付きリストの処理
+                const olMatch = trimmedLine.match(/^\d+\. (.+)$/);
+                if (olMatch) {
+                    if (inBlockquote) {
+                        result.push(`<blockquote>${blockquoteLines.join('<br>')}</blockquote>`);
+                        blockquoteLines = [];
+                        inBlockquote = false;
+                    }
+                    if (inList === 'ul') {
+                        result.push(`<ul>${listItems.map(item => `<li>${item}</li>`).join('')}</ul>`);
+                        listItems = [];
+                    }
+                    inList = 'ol';
+                    listItems.push(processInline(olMatch[1]));
+                    continue;
+                }
+
+                // リスト以外の行が来たらリストを閉じる
+                if (inList) {
+                    result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
+                    listItems = [];
+                    inList = null;
+                }
+
+                // 通常のテキスト行（特殊要素の間に挟まれた場合）
+                result.push(`<p>${processInline(trimmedLine)}</p>`);
+            }
+
+            // 残りのリスト・引用を閉じる
             if (inList) {
                 result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
-                listItems = [];
-                inList = null;
             }
-            // 引用を閉じる
             if (inBlockquote) {
                 result.push(`<blockquote>${blockquoteLines.join('<br>')}</blockquote>`);
-                blockquoteLines = [];
-                inBlockquote = false;
             }
-            continue;
-        }
-
-        // コードブロックプレースホルダー
-        if (line.match(/^__CODE_BLOCK_\d+__$/)) {
-            if (inList) {
-                result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
-                listItems = [];
-                inList = null;
+        } else {
+            // 特殊要素を含まない通常の段落
+            // 段落内の単一改行を<br>に変換して1つの<p>タグで囲む
+            const processedLines = lines.map(line => processInline(line.trim())).filter(line => line);
+            if (processedLines.length > 0) {
+                result.push(`<p>${processedLines.join('<br>')}</p>`);
             }
-            const index = parseInt(line.match(/\d+/)![0]);
-            result.push(codeBlocks[index]);
-            continue;
         }
-
-        // 見出しの処理（Obsidian→note.comルール適用）
-        // H1 → 大見出し (h2)
-        const h1Match = line.match(/^# (.+)$/);
-        if (h1Match) {
-            if (inList) {
-                result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
-                listItems = [];
-                inList = null;
-            }
-            result.push(`<h2>${processInline(h1Match[1])}</h2>`);
-            continue;
-        }
-
-        // H2 → 大見出し (h2)
-        const h2Match = line.match(/^## (.+)$/);
-        if (h2Match) {
-            if (inList) {
-                result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
-                listItems = [];
-                inList = null;
-            }
-            result.push(`<h2>${processInline(h2Match[1])}</h2>`);
-            continue;
-        }
-
-        // H3 → 小見出し (h3)
-        const h3Match = line.match(/^### (.+)$/);
-        if (h3Match) {
-            if (inList) {
-                result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
-                listItems = [];
-                inList = null;
-            }
-            result.push(`<h3>${processInline(h3Match[1])}</h3>`);
-            continue;
-        }
-
-        // H4以降 → 強調 (strong)
-        const h4PlusMatch = line.match(/^#{4,6} (.+)$/);
-        if (h4PlusMatch) {
-            if (inList) {
-                result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
-                listItems = [];
-                inList = null;
-            }
-            result.push(`<p><strong>${processInline(h4PlusMatch[1])}</strong></p>`);
-            continue;
-        }
-
-        // 水平線
-        if (line.match(/^-{3,}$/) || line.match(/^\*{3,}$/)) {
-            if (inList) {
-                result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
-                listItems = [];
-                inList = null;
-            }
-            result.push('<hr>');
-            continue;
-        }
-
-        // 引用の処理
-        const quoteMatch = line.match(/^> (.+)$/);
-        if (quoteMatch) {
-            if (inList) {
-                result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
-                listItems = [];
-                inList = null;
-            }
-            inBlockquote = true;
-            blockquoteLines.push(processInline(quoteMatch[1]));
-            continue;
-        } else if (inBlockquote) {
-            result.push(`<blockquote>${blockquoteLines.join('<br>')}</blockquote>`);
-            blockquoteLines = [];
-            inBlockquote = false;
-        }
-
-        // 箇条書きリストの処理
-        const ulMatch = line.match(/^[\-\*] (.+)$/);
-        if (ulMatch) {
-            if (inList === 'ol') {
-                result.push(`<ol>${listItems.map(item => `<li>${item}</li>`).join('')}</ol>`);
-                listItems = [];
-            }
-            inList = 'ul';
-            listItems.push(processInline(ulMatch[1]));
-            continue;
-        }
-
-        // 番号付きリストの処理
-        const olMatch = line.match(/^\d+\. (.+)$/);
-        if (olMatch) {
-            if (inList === 'ul') {
-                result.push(`<ul>${listItems.map(item => `<li>${item}</li>`).join('')}</ul>`);
-                listItems = [];
-            }
-            inList = 'ol';
-            listItems.push(processInline(olMatch[1]));
-            continue;
-        }
-
-        // リスト以外の行が来たらリストを閉じる
-        if (inList) {
-            result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
-            listItems = [];
-            inList = null;
-        }
-
-        // 通常の段落
-        result.push(`<p>${processInline(line)}</p>`);
-    }
-
-    // 残りのリストを閉じる
-    if (inList) {
-        result.push(`<${inList}>${listItems.map(item => `<li>${item}</li>`).join('')}</${inList}>`);
-    }
-    if (inBlockquote) {
-        result.push(`<blockquote>${blockquoteLines.join('<br>')}</blockquote>`);
     }
 
     let html = result.join('');
