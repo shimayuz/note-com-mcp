@@ -136,7 +136,7 @@ export async function loginToNote(): Promise<boolean> {
     if (activeSessionCookie && !activeXsrfToken) {
       console.error("Trying to obtain XSRF token from current_user API...");
       try {
-        const currentUserResponse = await fetch(`${API_BASE_URL}/api/v2/current_user`, {
+        const currentUserResponse = await fetch(`${API_BASE_URL}/v2/current_user`, {
           method: "GET",
           headers: {
             Accept: "application/json",

@@ -1,9 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import fetch from "node-fetch";
 import dotenv from "dotenv";
 import path from "path";
+import http from "http";
+import { randomUUID } from "crypto";
 import { fileURLToPath } from "url";
 import { refreshSessionWithPlaywright } from "./utils/playwright-session.js";
 import {
@@ -468,21 +472,13 @@ async function noteApiRequest(
   // Acceptヘッダーを追加
   headers["Accept"] = "application/json";
 
-  // 認証設定 - 環境変数のCookieを優先使用（現在多くのAPIがこれで正常動作している）
-  if (AUTH_STATUS.hasCookie) {
-    // 従来のCookieベースの認証を優先使用
-    const cookies = [];
-    if (NOTE_SESSION_V5) {
-      cookies.push(`_note_session_v5=${NOTE_SESSION_V5}`);
-      if (DEBUG) console.error("Using session cookie from .env file");
-    }
-    if (cookies.length > 0) {
-      headers["Cookie"] = cookies.join("; ");
-    }
-  } else if (localActiveSessionCookie) {
-    // 動的に取得したセッションCookieを使用
+  // 認証設定 - 動的に取得したCookieを最優先
+  if (localActiveSessionCookie) {
     headers["Cookie"] = localActiveSessionCookie;
     if (DEBUG) console.error("Using dynamically obtained session cookie");
+  } else if (NOTE_SESSION_V5) {
+    headers["Cookie"] = `_note_session_v5=${NOTE_SESSION_V5}`;
+    if (DEBUG) console.error("Using session cookie from .env file");
   } else if (requireAuth && NOTE_EMAIL && NOTE_PASSWORD) {
     // 認証情報が必要で、メールアドレスとパスワードが設定されている場合はログイン試行
     const loggedIn = await loginToNote();
@@ -2089,57 +2085,241 @@ async function main() {
   try {
     console.error("Starting note API MCP Server...");
 
-    // 認証情報の確認と自動ログイン
-    if (NOTE_SESSION_V5 || NOTE_XSRF_TOKEN) {
-      // 既存のセッションCookieがあればそれを使用
-      console.error("既存のセッションCookieを使用します。");
-      if (NOTE_SESSION_V5) {
-        localActiveSessionCookie = `_note_session_v5=${NOTE_SESSION_V5}`;
-        setActiveSessionCookie(localActiveSessionCookie);
+    // 認証情報の取得: Playwrightで毎回最新Cookieを取得する
+    if (NOTE_EMAIL && NOTE_PASSWORD) {
+      // メール/PWがあれば常にPlaywright headlessで最新Cookie取得
+      console.error("Playwrightで最新のセッションCookieを取得します...");
+      try {
+        const result = await refreshSessionWithPlaywright({
+          headless: true,
+          navigationTimeoutMs: 45_000,
+        });
+        localActiveSessionCookie = result.sessionCookie;
+        localActiveXsrfToken = result.xsrfToken;
+        syncSessionFromAuth();
+        console.error("✅ 最新のセッションCookieを取得しました。");
+      } catch (playwrightError: any) {
+        console.error("⚠️ Playwright headlessログインに失敗:", playwrightError.message);
+        // フォールバック: .envの既存Cookieがあればそれを使用
+        if (NOTE_SESSION_V5) {
+          console.error("フォールバック: .envの既存セッションCookieを使用します。");
+          localActiveSessionCookie = `_note_session_v5=${NOTE_SESSION_V5}`;
+          setActiveSessionCookie(localActiveSessionCookie);
+          if (NOTE_XSRF_TOKEN) {
+            localActiveXsrfToken = NOTE_XSRF_TOKEN;
+            setActiveXsrfToken(localActiveXsrfToken);
+          }
+        } else {
+          console.error("❌ セッション取得に失敗しました。認証が必要な機能は使用できません。");
+        }
       }
+    } else if (NOTE_SESSION_V5) {
+      // メール/PWなし、既存Cookieのみ
+      console.error("既存のセッションCookieを使用します（Playwright更新不可: メール/PW未設定）。");
+      localActiveSessionCookie = `_note_session_v5=${NOTE_SESSION_V5}`;
+      setActiveSessionCookie(localActiveSessionCookie);
       if (NOTE_XSRF_TOKEN) {
         localActiveXsrfToken = NOTE_XSRF_TOKEN;
         setActiveXsrfToken(localActiveXsrfToken);
       }
-    } else if (NOTE_EMAIL && NOTE_PASSWORD) {
-      // メールアドレスとパスワードが設定されていれば自動ログインを試行
-      console.error("メールアドレスとパスワードからログイン試行中...");
-      const loginSuccess = await loginToNote();
-      if (loginSuccess) {
-        console.error("ログイン成功: セッションCookieを取得しました。");
-      } else {
-        console.error("ログイン失敗: メールアドレスまたはパスワードが正しくない可能性があります。");
-      }
     } else {
-      // 認証情報がない場合、Playwrightで手動ログインを試行
+      // 何もない場合、Playwrightで手動ログインを試行
       console.error("認証情報が設定されていません。Playwrightでブラウザログインを試行します...");
-      console.error("ブラウザが開いたら、note.comにログインしてください。");
       try {
-        await refreshSessionWithPlaywright({ headless: false });
+        const result = await refreshSessionWithPlaywright({
+          headless: false,
+          navigationTimeoutMs: 150_000,
+        });
+        localActiveSessionCookie = result.sessionCookie;
+        localActiveXsrfToken = result.xsrfToken;
         syncSessionFromAuth();
-        if (localActiveSessionCookie) {
-          console.error("Playwrightでのログインに成功しました。");
-        } else {
-          console.error("Playwrightでもセッションを取得できませんでした。");
-        }
-      } catch (playwrightError) {
-        console.error("Playwrightログインエラー:", playwrightError);
+        console.error("✅ Playwrightでのログインに成功しました。");
+      } catch (playwrightError: any) {
+        console.error("❌ Playwrightログインエラー:", playwrightError.message);
       }
     }
 
-    // STDIOトランスポートを作成して接続
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.error("note API MCP Server is running on stdio transport");
-
     // 認証状態を表示
-    if (localActiveSessionCookie || NOTE_SESSION_V5 || NOTE_XSRF_TOKEN) {
-      console.error("認証情報が設定されています。認証が必要な機能も利用できます。");
+    const showAuthStatus = () => {
+      if (localActiveSessionCookie) {
+        console.error(
+          "✅ 認証情報が設定されています。認証が必要な機能も利用できます。",
+        );
+      } else {
+        console.error(
+          "⚠️ 認証情報が設定されていません。読み取り機能のみ利用可能です。",
+        );
+      }
+    };
+
+    // トランスポート切り替え: MCP_HTTP_PORT環境変数 or --httpフラグ → HTTPモード
+    const useHttp =
+      process.env.MCP_HTTP_PORT || process.argv.includes("--http");
+
+    if (useHttp) {
+      const PORT = parseInt(process.env.MCP_HTTP_PORT || "3000", 10);
+      const HOST = process.env.MCP_HTTP_HOST || "127.0.0.1";
+      const transports: Record<string, StreamableHTTPServerTransport> = {};
+
+      const httpServer = http.createServer(async (req, res) => {
+        // CORSヘッダー
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader(
+          "Access-Control-Allow-Methods",
+          "GET, POST, DELETE, OPTIONS",
+        );
+        res.setHeader(
+          "Access-Control-Allow-Headers",
+          "Content-Type, mcp-session-id",
+        );
+        res.setHeader("Access-Control-Expose-Headers", "mcp-session-id");
+
+        if (req.method === "OPTIONS") {
+          res.writeHead(204);
+          res.end();
+          return;
+        }
+
+        // ヘルスチェック
+        if (req.url === "/health" && req.method === "GET") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ status: "ok" }));
+          return;
+        }
+
+        if (req.url !== "/mcp") {
+          res.writeHead(404);
+          res.end("Not Found");
+          return;
+        }
+
+        if (req.method === "POST") {
+          const body = await new Promise<string>((resolve) => {
+            let data = "";
+            req.on("data", (chunk: Buffer) => {
+              data += chunk.toString();
+            });
+            req.on("end", () => resolve(data));
+          });
+
+          let parsedBody: unknown;
+          try {
+            parsedBody = JSON.parse(body);
+          } catch {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                error: { code: -32700, message: "Parse error" },
+                id: null,
+              }),
+            );
+            return;
+          }
+
+          const sessionId = req.headers["mcp-session-id"] as
+            | string
+            | undefined;
+
+          try {
+            if (sessionId && transports[sessionId]) {
+              await transports[sessionId].handleRequest(req, res, parsedBody);
+            } else if (!sessionId && isInitializeRequest(parsedBody)) {
+              const transport = new StreamableHTTPServerTransport({
+                sessionIdGenerator: () => randomUUID(),
+                onsessioninitialized: (sid: string) => {
+                  transports[sid] = transport;
+                },
+              });
+              transport.onclose = () => {
+                const sid = transport.sessionId;
+                if (sid && transports[sid]) {
+                  delete transports[sid];
+                }
+              };
+              await server.connect(transport);
+              await transport.handleRequest(req, res, parsedBody);
+            } else {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  error: {
+                    code: -32000,
+                    message: "Bad Request: No valid session ID",
+                  },
+                  id: null,
+                }),
+              );
+            }
+          } catch (error) {
+            console.error("Error handling MCP request:", error);
+            if (!res.headersSent) {
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  error: { code: -32603, message: "Internal server error" },
+                  id: null,
+                }),
+              );
+            }
+          }
+        } else if (req.method === "GET") {
+          const sessionId = req.headers["mcp-session-id"] as
+            | string
+            | undefined;
+          if (!sessionId || !transports[sessionId]) {
+            res.writeHead(400);
+            res.end("Invalid or missing session ID");
+            return;
+          }
+          await transports[sessionId].handleRequest(req, res);
+        } else if (req.method === "DELETE") {
+          const sessionId = req.headers["mcp-session-id"] as
+            | string
+            | undefined;
+          if (!sessionId || !transports[sessionId]) {
+            res.writeHead(400);
+            res.end("Invalid or missing session ID");
+            return;
+          }
+          await transports[sessionId].handleRequest(req, res);
+        } else {
+          res.writeHead(405);
+          res.end("Method not allowed");
+        }
+      });
+
+      httpServer.listen(PORT, HOST, () => {
+        console.error(
+          `note API MCP Server is running on HTTP transport at http://${HOST}:${PORT}/mcp`,
+        );
+        showAuthStatus();
+      });
+
+      // グレースフルシャットダウン
+      const shutdown = async () => {
+        console.error("Shutting down HTTP server...");
+        for (const sid of Object.keys(transports)) {
+          try {
+            await transports[sid].close();
+            delete transports[sid];
+          } catch {
+            // shutdown中のエラーは無視
+          }
+        }
+        httpServer.close();
+        process.exit(0);
+      };
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
     } else {
-      console.error("警告: 認証情報が設定されていません。読み取り機能のみ利用可能です。");
-      console.error(
-        "投稿、コメント、スキなどの機能を使うには.envファイルに認証情報を設定してください。"
-      );
+      // STDIOモード（デフォルト）
+      const transport = new StdioServerTransport();
+      await server.connect(transport);
+      console.error("note API MCP Server is running on stdio transport");
+      showAuthStatus();
     }
   } catch (error) {
     console.error("Fatal error during server startup:", error);
