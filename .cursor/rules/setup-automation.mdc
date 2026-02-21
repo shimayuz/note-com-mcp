@@ -1,16 +1,17 @@
 ---
 description: note MCP Server の自動セットアップルール
 globs: ["**/*"]
-alwaysApply: true
+alwaysApply: false
 ---
 
 # note MCP Server セットアップ自動化ルール
 
 このルールは、Cursorが自動的にセットアップを実行するための指示を定義しています。
+ユーザーが `@setup-automation.mdc このルールを元にセットアップして` と指示した場合に実行してください。
 
-## 📋 セットアップ指示の検出
+## セットアップ指示の検出
 
-ユーザーが以下のような指示をした場合、自動セットアップを開始する：
+ユーザーが以下のような指示をした場合、自動セットアップを開始する:
 
 - 「セットアップして」
 - 「設定して」
@@ -19,220 +20,62 @@ alwaysApply: true
 - 「note MCP を使えるようにして」
 - 「初期設定をして」
 
-## 🚀 推奨: セットアップスクリプトを使用
+## Step 1: 環境チェック
 
-**最も確実な方法は、セットアップスクリプトを実行することです。**
-
-### Macの場合
-```bash
-./scripts/setup.sh
-```
-
-### Windowsの場合
-```powershell
-.\scripts\setup.ps1
-```
-
-スクリプトが正常に完了したら、Cursorを再起動してください。
-
-> ⚠️ **エラーが発生した場合**: `docs/SETUP_ERRORS_AND_SOLUTIONS.md` を参照してください。
-
----
-
-## 🔧 手動セットアップ（スクリプトが使えない場合）
-
-### Phase 1: 環境確認（必須）
+以下のコマンドを実行して環境を確認する。
 
 ```bash
-# Node.js バージョン確認
 node --version
-# → v18.0.0 以上であること
-
-# npm バージョン確認
 npm --version
-# → v9.0.0 以上であること
-
-# Git バージョン確認（オプション）
-git --version
 ```
 
-**判定基準**:
-- Node.js v18未満 → ユーザーにアップグレードを案内
-- Node.js 未インストール → インストール方法を案内
+**判定:**
+
+- Node.js v18未満 → 「Node.js v18以上が必要です。<https://nodejs.org/> からインストールしてください」と案内して停止
+- Node.js 未インストール → Mac: `brew install node`、Windows: <https://nodejs.org/> を案内して停止
 
 **Windowsの場合は文字化け防止のため、最初に以下を実行**:
 ```powershell
-# PowerShellでUTF-8を有効化
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 chcp 65001
 ```
 
-### Phase 2: 依存パッケージインストール
+## Step 2: npm install
 
 ```bash
-# パッケージインストール
 npm install
 ```
 
-**成功判定**: `added XXX packages` が出力される
+**失敗時:**
 
-**失敗時の対処**:
 ```bash
 npm cache clean --force
 rm -rf node_modules package-lock.json
 npm install
 ```
 
-### Phase 3: Playwright インストール
+## Step 3: Playwright インストール
 
 ```bash
-# Playwright ブラウザダウンロード
 npx playwright install
 ```
 
-**Linux/WSL の場合は追加実行**:
+**Linux/WSLの場合は追加で実行:**
+
 ```bash
 npx playwright install-deps
 ```
 
-### Phase 4: ビルド
+## Step 4: ビルド
 
 ```bash
-# TypeScript コンパイル
 npm run build
 ```
 
-**成功判定**: `build/note-mcp-server.js` が存在する
+**成功判定:** `build/note-mcp-server.js` ファイルが生成されること
 
-**確認コマンド**:
-```bash
-ls -la build/note-mcp-server.js
-```
-
-### Phase 5: 環境変数設定
-
-```bash
-# .env.sample から .env を生成
-cp .env.sample .env
-```
-
-> **Note**: 認証情報の手動設定は不要です。
-> Cursor再起動後、初回のMCPツール呼び出し時にブラウザが開き、ログインすると自動でセッションが取得されます。
-
-### Phase 6: MCP クライアント設定
-
-#### プロジェクトパス取得
-```bash
-pwd
-```
-
-#### OS検出
-```bash
-uname -s
-```
-- `Darwin` → macOS
-- `Linux` → Linux
-- それ以外 → Windows
-
-#### macOS/Linux の場合
-```bash
-mkdir -p ~/.cursor
-```
-
-MCP設定ファイル `~/.cursor/mcp.json`:
-```json
-{
-  "mcpServers": {
-    "note-api": {
-      "command": "node",
-      "args": ["${PROJECT_PATH}/build/note-mcp-server.js"],
-      "env": {}
-    }
-  }
-}
-```
-
-#### Windows の場合
-
-```powershell
-# ディレクトリ作成
-New-Item -Path "$env:USERPROFILE\.cursor" -ItemType Directory -Force
-
-# プロジェクトパス取得
-$projectPath = (Get-Location).Path -replace '\\', '\\\\'
-
-# MCP設定ファイル作成（UTF-8で保存）
-$config = @"
-{
-  "mcpServers": {
-    "note-api": {
-      "command": "node",
-      "args": ["$projectPath\\build\\note-mcp-server.js"]
-    }
-  }
-}
-"@
-$config | Out-File -FilePath "$env:USERPROFILE\.cursor\mcp.json" -Encoding utf8
-```
-
-**重要**: 上記コマンドをプロジェクトディレクトリで実行すること
-
-## ✅ 完了チェックリスト
-
-セットアップ完了後、以下を確認：
-
-1. [x] node --version → v18以上
-2. [x] npm --version → v9以上
-3. [x] npm install → 成功
-4. [x] npx playwright install → 成功
-5. [x] npm run build → 成功
-6. [x] build/note-mcp-server.js → 存在
-7. [x] .env → 作成済み
-8. [x] ~/.cursor/mcp.json → 作成済み
-
-## 📝 完了報告テンプレート
-
-```
-◤◢◤◢◤◢◤◢◤◢◤◢◤◢
-✅ セットアップ完了
-
-📦 インストール済み:
-- npm パッケージ
-- Playwright ブラウザ
-
-🔨 ビルド済み:
-- build/note-mcp-server.js
-
-⚙️ MCP設定:
-- ~/.cursor/mcp.json 作成済み
-
-🚀 次のステップ:
-1. Cursor を再起動
-2. 「noteで記事を検索して」と試す
-3. 初回はブラウザが開くので note.com にログイン
-4. ログイン完了後、自動でセッションが取得されます
-◤◢◤◢◤◢◤◢◤◢◤◢◤◢
-```
-
-## 🚨 エラー対応
-
-### npm install 失敗
-
-```bash
-npm cache clean --force
-rm -rf node_modules package-lock.json
-npm install
-```
-
-### playwright install 失敗
-
-```bash
-npx playwright install-deps
-npx playwright install
-```
-
-### build 失敗
+**失敗時:**
 
 ```bash
 rm -rf node_modules
@@ -240,19 +83,163 @@ npm install
 npm run build
 ```
 
+## Step 5: .env ファイル作成
+
+`.env` ファイルが存在しない場合のみ作成する。
+
+```bash
+cp .env.sample .env
+```
+
+**重要: ここで必ず停止し、ユーザーに以下を伝えること:**
+
+> `.env` ファイルを作成しました。**以下の2項目をあなたのnoteアカウント情報に書き換えてください。**
+>
+> `.env` ファイルを開いて、以下のコメントアウトを外し、自分の情報を入力してください:
+>
+> ```text
+> NOTE_EMAIL=your-email@example.com
+> NOTE_PASSWORD=your-password
+> ```
+>
+> 入力が終わったら「完了」と教えてください。
+>
+> **注意:** `.env` ファイルはあなたのPC内だけで使うものです。GitHubにはアップロードされません。
+> メール/パスワードを入力しなくても、初回起動時にブラウザでログインする方法もあります。
+
+ユーザーの応答を待ってから次のステップに進むこと。
+
+## Step 6: MCP クライアント設定
+
+Cursor用のMCP設定ファイルを作成する。
+
+### プロジェクトパス取得
+
+```bash
+pwd
+```
+
+### OS検出
+
+```bash
+uname -s 2>/dev/null || echo "Windows"
+```
+
+### macOS / Linux の場合
+
+```bash
+mkdir -p ~/.cursor
+```
+
+既存の `~/.cursor/mcp.json` がある場合はバックアップを取ってから、`mcpServers` に `note-api` を追加（マージ）する。
+既存の設定がない場合は新規作成:
+
+```json
+{
+  "mcpServers": {
+    "note-api": {
+      "command": "node",
+      "args": ["<PROJECT_PATH>/build/note-mcp-server.js"],
+      "env": {}
+    }
+  }
+}
+```
+
+`<PROJECT_PATH>` は `pwd` の出力に置換すること。
+
+### Windows の場合
+
+```powershell
+New-Item -Path "$env:USERPROFILE\.cursor" -ItemType Directory -Force
+```
+
+MCP設定ファイル `$env:USERPROFILE\.cursor\mcp.json` を作成:
+
+```json
+{
+  "mcpServers": {
+    "note-api": {
+      "command": "node",
+      "args": ["<PROJECT_PATH>\\build\\note-mcp-server.js"],
+      "env": {}
+    }
+  }
+}
+```
+
+`<PROJECT_PATH>` はプロジェクトパスに置換し、バックスラッシュをエスケープ（`\\`）すること。
+
+## Step 7: 起動テスト
+
+```bash
+npm run start:http
+```
+
+**期待される動作:**
+
+1. 「Starting note API MCP Server...」と表示される
+2. ブラウザが自動で開く → ユーザーがnote.comにログインする
+3. ログイン完了後、ブラウザが自動で閉じる
+4. HTTPサーバーが起動する
+
+**ユーザーへの案内:**
+
+- ブラウザが開いたら、note.comにログインしてください
+- ログイン完了後、しばらく待つと自動でブラウザが閉じます（最大2分半）
+- サーバーが起動したら `Ctrl + C` で停止してOKです
+
+**ポート競合時:**
+
+```bash
+MCP_HTTP_PORT=3001 node build/note-mcp-server.js
+```
+
+## Step 8: 完了報告
+
+すべてのステップが完了したら、以下を報告する:
+
+```text
+セットアップ完了!
+
+インストール済み:
+- npm パッケージ
+- Playwright ブラウザ
+
+ビルド済み:
+- build/note-mcp-server.js
+
+MCP設定:
+- ~/.cursor/mcp.json 作成済み
+
+次のステップ:
+1. Cursor を再起動してください
+2. 「noteで記事を検索して」と試してみてください
+3. 初回はブラウザが開くので note.com にログインしてください
+
+HTTPモード（Obsidianプラグイン等から接続する場合）:
+npm run start:http
+- HTTPサーバーはObsidianを使っている間は起動したままにしてください
+- デフォルトポートは3000です
+```
+
+## エラー対応
+
+### EADDRINUSE（ポート使用中）
+
+```bash
+lsof -ti:3000 | xargs kill -9
+npm run start:http
+```
+
+### Playwright がタイムアウト
+
+```bash
+npx playwright install --force
+```
+
 ### MCP が認識されない
 
-1. Cursor を完全終了
-2. 設定ファイル確認: `cat ~/.cursor/mcp.json`
-3. Cursor を再起動
-
-## 📁 重要ファイル
-
-| ファイル | 説明 |
-|---------|------|
-| `scripts/setup.sh` | Mac/Linux 用セットアップスクリプト |
-| `scripts/setup.ps1` | Windows 用セットアップスクリプト |
-| `docs/SETUP_GUIDE.md` | 詳細セットアップガイド |
-| `docs/CURSOR_AUTO_SETUP.md` | Cursor自動セットアップガイド |
-| `.env.sample` | 環境変数サンプル |
-| `.cursorrules` | Cursorルールファイル |
+1. Cursor を完全終了して再起動
+2. `cat ~/.cursor/mcp.json` で設定ファイルのパスが正しいか確認
+3. `node build/note-mcp-server.js` を直接実行してエラーがないか確認
