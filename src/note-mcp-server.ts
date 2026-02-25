@@ -1703,7 +1703,26 @@ server.tool(
         },
       );
 
-      // Obsidian形式の画像参照を置換: ![[filename.png]] or ![[filename.png|caption]]
+      // bodyはHTML形式（<p name="..." id="...">![[image.png]]</p><p ...>caption</p>）
+      // Step 1: <p>![[image]]</p><p>caption</p> → <figure> + <figcaption>caption</figcaption>
+      // 画像pタグ直後のpタグ内テキストをキャプションとして取り込む
+      processedBody = processedBody.replace(
+        /<p[^>]*>!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]<\/p><p[^>]*>([^<]+)<\/p>/g,
+        (match, fileName, pipeCaption, nextPText) => {
+          const baseName = path.basename(fileName.trim());
+          if (uploadedImages.has(baseName)) {
+            const imageUrl = uploadedImages.get(baseName)!;
+            const uuid1 = randomUUID();
+            const uuid2 = randomUUID();
+            const caption = pipeCaption?.trim() || nextPText.trim();
+            console.error(`キャプション検出: ${baseName} → "${caption}"`);
+            return `<figure name="${uuid1}" id="${uuid2}"><img src="${imageUrl}" alt="" width="620" height="auto"><figcaption>${caption}</figcaption></figure>`;
+          }
+          return match;
+        },
+      );
+
+      // Step 2: 残りの画像（キャプションなし、またはStep1でマッチしなかったもの）
       processedBody = processedBody.replace(
         /!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
         (match, fileName, caption) => {
@@ -1718,7 +1737,7 @@ server.tool(
         },
       );
 
-      // 標準Markdown形式の画像参照を置換: ![alt](path)
+      // Step 3: 標準Markdown形式の画像参照を置換: ![alt](path)
       processedBody = processedBody.replace(
         /!\[([^\]]*)\]\(([^)]+)\)/g,
         (match, alt, srcPath) => {
