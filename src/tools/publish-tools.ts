@@ -15,6 +15,23 @@ import {
 } from "../utils/note-editor-formatter.js";
 
 /**
+ * 構造的な行（見出し、リスト、コードブロック、画像等）かどうかを判定
+ */
+function isImageOrStructuralLine(line: string): boolean {
+  const trimmed = line.trim();
+  return (
+    /^#{1,6}\s/.test(trimmed) ||
+    /^[-*]\s/.test(trimmed) ||
+    /^\d+\.\s/.test(trimmed) ||
+    /^>\s?/.test(trimmed) ||
+    /^```/.test(trimmed) ||
+    /^---+$/.test(trimmed) ||
+    /^!\[/.test(trimmed) ||
+    /^<!--/.test(trimmed)
+  );
+}
+
+/**
  * 現在のカーソル位置に画像を挿入
  */
 async function insertImageAtCurrentPosition(
@@ -799,34 +816,106 @@ export function registerPublishTools(server: McpServer): void {
         }
 
         // Markdownを解析して画像パスを一時ファイルパスに置換
-        let processedMarkdown = markdown;
+        // 行ごとに処理し、画像直後の行をキャプション（alt text）として取り込む
+        const mdLines = markdown.split("\n");
+        const processedLines: string[] = [];
 
-        // Obsidian形式の画像参照を置換: ![[filename.png]]
-        processedMarkdown = processedMarkdown.replace(
-          /!\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g,
-          (match, fileName) => {
-            const cleanFileName = fileName.trim();
-            const baseName = path.basename(cleanFileName);
-            if (imageMap.has(baseName)) {
-              // 一時ファイルパスを使用
-              return `![](${imageMap.get(baseName)})`;
-            }
-            return match;
-          }
-        );
+        for (let li = 0; li < mdLines.length; li++) {
+          const trimmed = mdLines[li].trim();
 
-        // 標準Markdown形式の画像参照を置換: ![alt](path)
-        processedMarkdown = processedMarkdown.replace(
-          /!\[([^\]]*)\]\(([^)]+)\)/g,
-          (match, alt, srcPath) => {
-            if (srcPath.startsWith("http")) return match;
-            const baseName = path.basename(srcPath);
+          // Obsidian形式: ![[filename.png]] or ![[filename.png|caption]]
+          const obsMatch = trimmed.match(/^!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]$/);
+          if (obsMatch) {
+            const baseName = path.basename(obsMatch[1].trim());
             if (imageMap.has(baseName)) {
-              return `![${alt}](${imageMap.get(baseName)})`;
+              let caption = obsMatch[2]?.trim() || "";
+
+              // パイプキャプションがない場合、次行をキャプションとして検出
+              if (!caption) {
+                let nextIdx = li + 1;
+                if (nextIdx < mdLines.length && mdLines[nextIdx].trim() === "") {
+                  nextIdx++;
+                }
+                if (
+                  nextIdx < mdLines.length &&
+                  mdLines[nextIdx].trim() &&
+                  !isImageOrStructuralLine(mdLines[nextIdx])
+                ) {
+                  caption = mdLines[nextIdx].trim();
+                  // *italic* 形式の場合、* を除去
+                  const italicMatch = caption.match(/^\*(.+)\*$/);
+                  if (italicMatch) {
+                    caption = italicMatch[1].trim();
+                  }
+                  li = nextIdx; // キャプション行をスキップ
+                }
+              }
+
+              processedLines.push(`![${caption}](${imageMap.get(baseName)})`);
+              continue;
             }
-            return match;
           }
-        );
+
+          // 標準Markdown形式: ![alt](path)
+          const mdMatch = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+          if (mdMatch && !mdMatch[2].startsWith("http")) {
+            const baseName = path.basename(mdMatch[2]);
+            if (imageMap.has(baseName)) {
+              let caption = mdMatch[1] || "";
+
+              // alt textがない場合、次行をキャプションとして検出
+              if (!caption) {
+                let nextIdx = li + 1;
+                if (nextIdx < mdLines.length && mdLines[nextIdx].trim() === "") {
+                  nextIdx++;
+                }
+                if (
+                  nextIdx < mdLines.length &&
+                  mdLines[nextIdx].trim() &&
+                  !isImageOrStructuralLine(mdLines[nextIdx])
+                ) {
+                  caption = mdLines[nextIdx].trim();
+                  const italicMatch = caption.match(/^\*(.+)\*$/);
+                  if (italicMatch) {
+                    caption = italicMatch[1].trim();
+                  }
+                  li = nextIdx;
+                }
+              }
+
+              processedLines.push(`![${caption}](${imageMap.get(baseName)})`);
+              continue;
+            }
+          }
+
+          // インライン画像参照のフォールバック（行全体マッチしなかった場合）
+          let processedLine = mdLines[li];
+          processedLine = processedLine.replace(
+            /!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+            (match, fileName, caption) => {
+              const baseName = path.basename(fileName.trim());
+              if (imageMap.has(baseName)) {
+                return `![${caption?.trim() || ""}](${imageMap.get(baseName)})`;
+              }
+              return match;
+            }
+          );
+          processedLine = processedLine.replace(
+            /!\[([^\]]*)\]\(([^)]+)\)/g,
+            (match, alt, srcPath) => {
+              if (srcPath.startsWith("http")) return match;
+              const baseName = path.basename(srcPath);
+              if (imageMap.has(baseName)) {
+                return `![${alt}](${imageMap.get(baseName)})`;
+              }
+              return match;
+            }
+          );
+
+          processedLines.push(processedLine);
+        }
+
+        let processedMarkdown = processedLines.join("\n");
 
         // Playwrightで記事を作成
         const result = await createNoteWithPlaywright(

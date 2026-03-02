@@ -10,7 +10,7 @@
  * - 番号付きリスト → ol/li
  * - コードブロック → pre/code
  * - 引用 → blockquote
- * - 段落内の単一改行 → <br>（同一パラグラフ内の改行を維持）
+ * - 段落内の単一改行 → <br>（Obsidian準拠、単一改行で改行を保持）
  */
 
 /**
@@ -54,15 +54,15 @@ function isSpecialLine(line: string): boolean {
   if (/^>/.test(trimmed)) return true;
   // 水平線
   if (/^-{3,}$/.test(trimmed) || /^\*{3,}$/.test(trimmed)) return true;
-  // コードブロックプレースホルダー
-  if (/^__CODE_BLOCK_\d+__$/.test(trimmed)) return true;
+  // コードブロック・figureプレースホルダー
+  if (/^__\w+_\d+__$/.test(trimmed)) return true;
 
   return false;
 }
 
 /**
  * MarkdownをHTMLに変換する（note.com最適化版）
- * 段落内の単一改行は<br>に変換し、空行でパラグラフを区切る
+ * 段落内の単一改行は<br>で保持し（Obsidian準拠）、空行（\n\n）でパラグラフを区切る
  */
 export function convertMarkdownToHtml(markdown: string): string {
   if (!markdown) return "";
@@ -305,7 +305,7 @@ export function convertMarkdownToHtml(markdown: string): string {
       }
     } else {
       // 特殊要素を含まない通常の段落
-      // 段落内の単一改行を<br>に変換して1つの<p>タグで囲む
+      // 段落内の単一改行は<br>で保持（Obsidian準拠）
       const processedLines = lines.map((line) => processInline(line.trim())).filter((line) => line);
       if (processedLines.length > 0) {
         result.push(`<p>${processedLines.join("<br>")}</p>`);
@@ -313,7 +313,26 @@ export function convertMarkdownToHtml(markdown: string): string {
     }
   }
 
-  let html = result.join("");
+  // 連続する同一ブロック要素をマージ（blockquote間の余計な改行を防止）
+  const merged: string[] = [];
+  for (const item of result) {
+    const prev = merged[merged.length - 1];
+    if (
+      prev &&
+      prev.startsWith("<blockquote>") &&
+      prev.endsWith("</blockquote>") &&
+      item.startsWith("<blockquote>") &&
+      item.endsWith("</blockquote>")
+    ) {
+      const prevContent = prev.slice("<blockquote>".length, -"</blockquote>".length);
+      const curContent = item.slice("<blockquote>".length, -"</blockquote>".length);
+      merged[merged.length - 1] = `<blockquote>${prevContent}<br>${curContent}</blockquote>`;
+    } else {
+      merged.push(item);
+    }
+  }
+
+  let html = merged.join("");
 
   // インラインコードを復元
   inlineCodes.forEach((code, index) => {

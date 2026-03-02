@@ -1,6 +1,6 @@
 ---
 name: setup
-description: note MCP Server の自動セットアップ。リポジトリをクローンした後に実行し、環境構築からMCP設定まで完了させる。
+description: note MCP Server の自動セットアップ。リポジトリをクローンした後に実行し、環境構築からMCP設定まで完了させる。もしくはuserの自動設定というinputをトリガーにしてセットアップを開始する。
 ---
 
 # note MCP Server セットアップスキル
@@ -23,8 +23,9 @@ npm --version
 ```
 
 **判定:**
-- Node.js v18未満 → 「Node.js v18以上が必要です。https://nodejs.org/ からインストールしてください」と案内して停止
-- Node.js 未インストール → Mac: `brew install node`、Windows: https://nodejs.org/ を案内して停止
+
+- Node.js v18未満 → 「Node.js v18以上が必要です。<https://nodejs.org/> からインストールしてください」と案内して停止
+- Node.js 未インストール → Mac: `brew install node`、Windows: <https://nodejs.org/> を案内して停止
 - npm 未インストール → Node.jsと一緒にインストールされるはずなので、Node.jsの再インストールを案内
 
 ## Step 2: npm install
@@ -36,6 +37,7 @@ npm install
 **成功判定:** エラーなく完了すること
 
 **失敗時:**
+
 ```bash
 npm cache clean --force
 rm -rf node_modules package-lock.json
@@ -51,6 +53,7 @@ npx playwright install
 Playwrightはnote.comへの自動ログイン（セッション取得）に使用する。
 
 **Linux/WSLの場合は追加で実行:**
+
 ```bash
 npx playwright install-deps
 ```
@@ -64,6 +67,7 @@ npm run build
 **成功判定:** `build/note-mcp-server.js` ファイルが生成されること
 
 **失敗時:**
+
 ```bash
 rm -rf node_modules
 npm install
@@ -95,6 +99,7 @@ NOTE_PASSWORD=your-password
 入力が終わったら「done」「完了」「OK」などと教えてください。
 
 **注意:**
+
 - `.env` ファイルはあなたのPC内だけで使うものです。GitHubにはアップロードされません（.gitignoreで除外済み）
 - SNSやブログに `.env` の中身をスクショで載せないでください
 - メール/パスワードを入力せず、初回起動時にブラウザでログインする方法もあります（Step 7で自動的にブラウザが開きます）
@@ -118,6 +123,7 @@ NOTE_PASSWORD=your-password
 ### Claude Desktop の場合
 
 設定ファイルパス:
+
 - **Mac:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 
@@ -157,6 +163,7 @@ Claude Codeはプロジェクト内の `.mcp.json` を自動で読み込む。
 ### Cursor の場合
 
 設定ファイルパス:
+
 - **Mac/Linux:** `~/.cursor/mcp.json`
 - **Windows:** `%USERPROFILE%\.cursor\mcp.json`
 
@@ -185,6 +192,7 @@ npm run start:http
 ```
 
 **期待される動作:**
+
 1. 「Starting note API MCP Server...」と表示される
 2. Playwrightが起動し、ブラウザが自動で開く
 3. ユーザーがnote.comにログインする（Step 5でメール/パスワードを設定済みなら自動ログイン）
@@ -192,11 +200,13 @@ npm run start:http
 5. 「HTTP MCP server listening on 127.0.0.1:3000」のようなメッセージが表示される
 
 **ユーザーへの案内:**
+
 - ブラウザが開いたら、note.comにログインしてください
 - ログイン完了後、しばらく待つと自動でブラウザが閉じます（最大2分半）
 - サーバーが起動したら `Ctrl + C` で停止してOKです
 
 **ポート競合時:**
+
 ```bash
 MCP_HTTP_PORT=3001 node build/note-mcp-server.js
 ```
@@ -210,24 +220,30 @@ MCP_HTTP_PORT=3001 node build/note-mcp-server.js
 **セットアップ完了!**
 
 **インストール済み:**
+
 - npm パッケージ
 - Playwright ブラウザ
 
 **ビルド済み:**
+
 - build/note-mcp-server.js
 
 **MCP設定:**
+
 - [作成した設定ファイルのパス]
 
 **使い方:**
 
 stdioモード（Cursor / Claude Desktop からの自動接続）:
+
 - AIツールを再起動すれば自動でMCPサーバーに接続されます
 
 HTTPモード（Obsidianプラグイン等から接続する場合）:
+
 ```bash
 npm run start:http
 ```
+
 - HTTPサーバーはObsidianを使っている間は起動したままにしてください
 - デフォルトポートは3000です
 
@@ -243,6 +259,7 @@ npm run start:http
 ```
 
 または別ポートで起動:
+
 ```bash
 MCP_HTTP_PORT=3001 node build/note-mcp-server.js
 ```

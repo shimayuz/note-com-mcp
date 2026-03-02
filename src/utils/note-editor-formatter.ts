@@ -34,11 +34,21 @@ export function parseMarkdown(markdown: string): MarkdownElement[] {
   const lines = markdown.split("\n");
 
   let i = 0;
+  let paragraphBuffer: string[] = [];
+
+  const flushParagraph = () => {
+    if (paragraphBuffer.length > 0) {
+      elements.push({ type: "paragraph", content: paragraphBuffer.join(" ") });
+      paragraphBuffer = [];
+    }
+  };
+
   while (i < lines.length) {
     const line = lines[i];
 
-    // 空行はスキップ
+    // 空行は段落区切り（\n\n = 新しい段落）
     if (line.trim() === "") {
+      flushParagraph();
       i++;
       continue;
     }
@@ -50,6 +60,7 @@ export function parseMarkdown(markdown: string): MarkdownElement[] {
     // <!-- ai-summary:end id="img1" -->
     const aiSummaryStartMatch = line.match(/^<!--\s*ai-summary:start\s+id="([^"]+)"/);
     if (aiSummaryStartMatch) {
+      flushParagraph();
       const blockId = aiSummaryStartMatch[1];
       i++;
 
@@ -98,6 +109,7 @@ export function parseMarkdown(markdown: string): MarkdownElement[] {
 
     // コードブロック
     if (line.startsWith("```")) {
+      flushParagraph();
       const language = line.slice(3).trim();
       const codeLines: string[] = [];
       i++;
@@ -116,11 +128,13 @@ export function parseMarkdown(markdown: string): MarkdownElement[] {
 
     // 見出し
     if (line.startsWith("## ")) {
+      flushParagraph();
       elements.push({ type: "heading2", content: line.slice(3).trim() });
       i++;
       continue;
     }
     if (line.startsWith("### ")) {
+      flushParagraph();
       elements.push({ type: "heading3", content: line.slice(4).trim() });
       i++;
       continue;
@@ -128,6 +142,7 @@ export function parseMarkdown(markdown: string): MarkdownElement[] {
 
     // 区切り線
     if (line.match(/^---+$/)) {
+      flushParagraph();
       elements.push({ type: "hr", content: "" });
       i++;
       continue;
@@ -136,6 +151,7 @@ export function parseMarkdown(markdown: string): MarkdownElement[] {
     // 引用（複数行対応、スペースなしの形式も対応）
     // "> text" または ">text" の両方に対応
     if (line.match(/^>\s?/)) {
+      flushParagraph();
       const quoteLines: string[] = [];
       while (i < lines.length && lines[i].match(/^>\s?/)) {
         // ">" の後のスペースを除去してテキストを取得
@@ -152,6 +168,7 @@ export function parseMarkdown(markdown: string): MarkdownElement[] {
 
     // 箇条書き
     if (line.match(/^[-*] /)) {
+      flushParagraph();
       const listItems: string[] = [];
       while (i < lines.length && lines[i].match(/^[-*] /)) {
         listItems.push(lines[i].replace(/^[-*] /, "").trim());
@@ -163,6 +180,7 @@ export function parseMarkdown(markdown: string): MarkdownElement[] {
 
     // 番号付きリスト
     if (line.match(/^\d+\. /)) {
+      flushParagraph();
       const listItems: string[] = [];
       while (i < lines.length && lines[i].match(/^\d+\. /)) {
         listItems.push(lines[i].replace(/^\d+\. /, "").trim());
@@ -177,6 +195,7 @@ export function parseMarkdown(markdown: string): MarkdownElement[] {
     const mdImageMatch = line.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
 
     if (obsidianImageMatch) {
+      flushParagraph();
       const imageElement: MarkdownElement = {
         type: "image",
         content: obsidianImageMatch[1],
@@ -210,6 +229,7 @@ export function parseMarkdown(markdown: string): MarkdownElement[] {
     }
 
     if (mdImageMatch) {
+      flushParagraph();
       const imageElement: MarkdownElement = {
         type: "image",
         content: mdImageMatch[1],
@@ -247,10 +267,12 @@ export function parseMarkdown(markdown: string): MarkdownElement[] {
       continue;
     }
 
-    // 通常のテキスト（段落）
-    elements.push({ type: "paragraph", content: line.trim() });
+    // 通常のテキスト（段落バッファに追加、空行で区切られるまで同一段落）
+    paragraphBuffer.push(line.trim());
     i++;
   }
+
+  flushParagraph();
 
   return elements;
 }

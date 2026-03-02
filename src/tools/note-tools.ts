@@ -15,6 +15,56 @@ import { randomUUID } from "crypto";
 import fs from "fs";
 import path from "path";
 
+/**
+ * 画像行の直後にあるテキスト行をキャプションとして検出する
+ * 空行を1行だけスキップし、構造的な行（見出し・リスト等）はキャプションとみなさない
+ * @returns [caption, skipToIndex] キャプションと、スキップ先のインデックス
+ */
+function detectNextLineCaption(
+  lines: string[],
+  currentIndex: number
+): [string, number] {
+  let nextIdx = currentIndex + 1;
+
+  // 空行を1行だけスキップ
+  if (nextIdx < lines.length && lines[nextIdx].trim() === "") {
+    nextIdx++;
+  }
+
+  if (
+    nextIdx < lines.length &&
+    lines[nextIdx].trim() &&
+    !isStructuralLine(lines[nextIdx])
+  ) {
+    let caption = lines[nextIdx].trim();
+    // *italic* 形式の場合、* を除去
+    const italicMatch = caption.match(/^\*(.+)\*$/);
+    if (italicMatch) {
+      caption = italicMatch[1].trim();
+    }
+    return [caption, nextIdx];
+  }
+
+  return ["", currentIndex];
+}
+
+/**
+ * 構造的な行（見出し、リスト、コードブロック等）かどうかを判定
+ */
+function isStructuralLine(line: string): boolean {
+  const trimmed = line.trim();
+  return (
+    /^#{1,6}\s/.test(trimmed) ||
+    /^[-*]\s/.test(trimmed) ||
+    /^\d+\.\s/.test(trimmed) ||
+    /^>\s?/.test(trimmed) ||
+    /^```/.test(trimmed) ||
+    /^---+$/.test(trimmed) ||
+    /^!\[/.test(trimmed) ||
+    /^<!--/.test(trimmed)
+  );
+}
+
 export function registerNoteTools(server: McpServer) {
   // 1. 記事詳細取得ツール
   server.tool(
@@ -208,7 +258,12 @@ export function registerNoteTools(server: McpServer) {
     "画像付きの下書き記事を作成する（Playwrightなし、API経由で画像を本文に挿入）",
     {
       title: z.string().describe("記事のタイトル"),
-      body: z.string().describe("記事の本文（Markdown形式、![[image.png]]形式の画像参照を含む）"),
+      body: z.string().describe("記事の本文（Markdown形式またはHTML形式、![[image.png]]形式の画像参照を含む）"),
+      bodyFormat: z
+        .enum(["markdown", "html"])
+        .optional()
+        .default("markdown")
+        .describe("本文の形式（markdown: Markdown→HTML変換を実行、html: 変換をスキップし画像処理のみ）"),
       images: z
         .array(
           z.object({
@@ -222,7 +277,7 @@ export function registerNoteTools(server: McpServer) {
       tags: z.array(z.string()).optional().describe("タグ（最大10個）"),
       id: z.string().optional().describe("既存の下書きID（既存の下書きを更新する場合）"),
     },
-    async ({ title, body, images, tags, id }) => {
+    async ({ title, body, bodyFormat, images, tags, id }) => {
       try {
         if (!hasAuth()) {
           return createAuthErrorResponse();
@@ -372,37 +427,120 @@ export function registerNoteTools(server: McpServer) {
           }
         );
 
-        // Obsidian形式の画像参照を置換: ![[filename.png]] or ![[filename.png|caption]]
-        processedBody = processedBody.replace(
-          /!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
-          (match, fileName, caption) => {
-            const cleanFileName = fileName.trim();
-            const baseName = path.basename(cleanFileName);
-            if (uploadedImages.has(baseName)) {
-              const imageUrl = uploadedImages.get(baseName)!;
-              const uuid1 = randomUUID();
-              const uuid2 = randomUUID();
-              return `<figure name="${uuid1}" id="${uuid2}"><img src="${imageUrl}" alt="" width="620" height="auto"><figcaption>${caption || ""}</figcaption></figure>`;
-            }
-            return match;
-          }
-        );
+        // 画像参照の置換 + 直後行キャプション検出を行ごとに一括処理
+        {
+          const bodyLines = processedBody.split("\n");
+          const resultLines: string[] = [];
 
-        // 標準Markdown形式の画像参照を置換: ![alt](path)
-        processedBody = processedBody.replace(
-          /!\[([^\]]*)\]\(([^)]+)\)/g,
-          (match, alt, srcPath) => {
-            if (srcPath.startsWith("http")) return match;
-            const baseName = path.basename(srcPath);
-            if (uploadedImages.has(baseName)) {
-              const imageUrl = uploadedImages.get(baseName)!;
-              const uuid1 = randomUUID();
-              const uuid2 = randomUUID();
-              return `<figure name="${uuid1}" id="${uuid2}"><img src="${imageUrl}" alt="" width="620" height="auto"><figcaption>${alt || ""}</figcaption></figure>`;
+          for (let i = 0; i < bodyLines.length; i++) {
+            const trimmedLine = bodyLines[i].trim();
+
+            // HTMLタグで囲まれた画像参照にも対応（<p>![[image.png]]</p> 等）
+            const unwrappedLine = trimmedLine
+              .replace(/^<p[^>]*>/, "")
+              .replace(/<\/p>$/, "")
+              .trim();
+
+            // 行全体がObsidian画像参照: ![[file.png]] or ![[file.png|caption]]
+            const obsidianFull = unwrappedLine.match(
+              /^!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]$/
+            );
+            // 行全体が標準Markdown画像参照: ![alt](path)
+            const mdFull = !obsidianFull
+              ? unwrappedLine.match(/^!\[([^\]]*)\]\(([^)]+)\)$/)
+              : null;
+
+            if (obsidianFull) {
+              const baseName = path.basename(obsidianFull[1].trim());
+              if (uploadedImages.has(baseName)) {
+                const imageUrl = uploadedImages.get(baseName)!;
+                let caption = obsidianFull[2]?.trim() || "";
+
+                // パイプキャプションがない場合、次行をキャプションとして検出
+                if (!caption) {
+                  const [detected, skipTo] = detectNextLineCaption(bodyLines, i);
+                  caption = detected;
+                  i = skipTo;
+                }
+
+                const uuid1 = randomUUID();
+                const uuid2 = randomUUID();
+                const figcaptionHtml = caption
+                  ? `<figcaption>${caption}</figcaption>`
+                  : "";
+                resultLines.push(
+                  `<figure name="${uuid1}" id="${uuid2}"><img src="${imageUrl}" alt="" width="620" height="auto">${figcaptionHtml}</figure>`
+                );
+                continue;
+              }
+            } else if (mdFull && !mdFull[2].startsWith("http")) {
+              const baseName = path.basename(mdFull[2]);
+              if (uploadedImages.has(baseName)) {
+                const imageUrl = uploadedImages.get(baseName)!;
+                let caption = mdFull[1] || "";
+
+                // alt textがない場合、次行をキャプションとして検出
+                if (!caption) {
+                  const [detected, skipTo] = detectNextLineCaption(bodyLines, i);
+                  caption = detected;
+                  i = skipTo;
+                }
+
+                const uuid1 = randomUUID();
+                const uuid2 = randomUUID();
+                const figcaptionHtml = caption
+                  ? `<figcaption>${caption}</figcaption>`
+                  : "";
+                resultLines.push(
+                  `<figure name="${uuid1}" id="${uuid2}"><img src="${imageUrl}" alt="" width="620" height="auto">${figcaptionHtml}</figure>`
+                );
+                continue;
+              }
             }
-            return match;
+
+            // インライン画像参照のフォールバック置換（行全体マッチしなかった場合）
+            let processedLine = bodyLines[i];
+
+            processedLine = processedLine.replace(
+              /!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+              (match, fileName, caption) => {
+                const baseName = path.basename(fileName.trim());
+                if (uploadedImages.has(baseName)) {
+                  const imageUrl = uploadedImages.get(baseName)!;
+                  const uuid1 = randomUUID();
+                  const uuid2 = randomUUID();
+                  const figcaptionHtml = caption?.trim()
+                    ? `<figcaption>${caption.trim()}</figcaption>`
+                    : "";
+                  return `<figure name="${uuid1}" id="${uuid2}"><img src="${imageUrl}" alt="" width="620" height="auto">${figcaptionHtml}</figure>`;
+                }
+                return match;
+              }
+            );
+
+            processedLine = processedLine.replace(
+              /!\[([^\]]*)\]\(([^)]+)\)/g,
+              (match, alt, srcPath) => {
+                if (srcPath.startsWith("http")) return match;
+                const baseName = path.basename(srcPath);
+                if (uploadedImages.has(baseName)) {
+                  const imageUrl = uploadedImages.get(baseName)!;
+                  const uuid1 = randomUUID();
+                  const uuid2 = randomUUID();
+                  const figcaptionHtml = alt
+                    ? `<figcaption>${alt}</figcaption>`
+                    : "";
+                  return `<figure name="${uuid1}" id="${uuid2}"><img src="${imageUrl}" alt="" width="620" height="auto">${figcaptionHtml}</figure>`;
+                }
+                return match;
+              }
+            );
+
+            resultLines.push(processedLine);
           }
-        );
+
+          processedBody = resultLines.join("\n");
+        }
 
         // 新規作成の場合、まず空の下書きを作成
         if (!id) {
@@ -435,25 +573,34 @@ export function registerNoteTools(server: McpServer) {
           }
         }
 
-        // Markdown→HTML変換（画像タグは既に挿入済みなので保持）
-        console.error("Markdown→HTML変換中...");
+        // 本文のHTML化
+        let htmlBody: string;
 
-        // figureタグを先に退避（convertMarkdownToNoteHtmlは<figure>タグを認識しないため）
-        const figurePattern = /<figure[^>]*>[\s\S]*?<\/figure>/g;
-        const figures: string[] = [];
-        let bodyForConversion = processedBody.replace(figurePattern, (match: string) => {
-          figures.push(match);
-          return `__FIGURE_PLACEHOLDER_${figures.length - 1}__`;
-        });
+        if (bodyFormat === "html") {
+          // Obsidian pluginがHTML変換済み → 画像のfigureタグのみ処理、変換はスキップ
+          console.error("HTML形式で受信、Markdown変換をスキップ");
+          htmlBody = processedBody;
+        } else {
+          // Markdown→HTML変換（画像タグは既に挿入済みなので保持）
+          console.error("Markdown→HTML変換中...");
 
-        // Markdown→HTML変換
-        let htmlBody = convertMarkdownToNoteHtml(bodyForConversion);
+          // figureタグを先に退避（convertMarkdownToNoteHtmlは<figure>タグを認識しないため）
+          const figurePattern = /<figure[^>]*>[\s\S]*?<\/figure>/g;
+          const figures: string[] = [];
+          let bodyForConversion = processedBody.replace(figurePattern, (match: string) => {
+            figures.push(match);
+            return `__FIGURE_PLACEHOLDER_${figures.length - 1}__`;
+          });
 
-        // figureタグを復元
-        figures.forEach((figure, index) => {
-          htmlBody = htmlBody.replace(`__FIGURE_PLACEHOLDER_${index}__`, figure);
-          htmlBody = htmlBody.replace(`<p>__FIGURE_PLACEHOLDER_${index}__</p>`, figure);
-        });
+          // Markdown→HTML変換
+          htmlBody = convertMarkdownToNoteHtml(bodyForConversion);
+
+          // figureタグを復元
+          figures.forEach((figure, index) => {
+            htmlBody = htmlBody.replace(`__FIGURE_PLACEHOLDER_${index}__`, figure);
+            htmlBody = htmlBody.replace(`<p>__FIGURE_PLACEHOLDER_${index}__</p>`, figure);
+          });
+        }
 
         console.error(`HTML変換完了 (${htmlBody.length} chars)`);
 

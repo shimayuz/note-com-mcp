@@ -97,8 +97,8 @@ function convertObsidianToNoteHtml(
       if (trimmed.startsWith("<")) return trimmed;
       // プレースホルダーの場合はそのまま
       if (trimmed.startsWith("<!--")) return trimmed;
-      // それ以外は段落タグで囲む
-      return `<p>${trimmed.replace(/\n/g, "<br>")}</p>`;
+      // それ以外は段落タグで囲む（単一改行はスペースで結合、\n\nで段落区切り）
+      return `<p>${trimmed.replace(/\n/g, " ")}</p>`;
     })
     .filter((p) => p)
     .join("\n");
