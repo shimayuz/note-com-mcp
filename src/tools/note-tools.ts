@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { noteApiRequest } from "../utils/api-client.js";
+import { API_BASE_URL } from "../config/api-config.js";
 import { formatNote, formatComment, formatLike } from "../utils/formatters.js";
 import { convertMarkdownToNoteHtml } from "../utils/markdown-converter.js";
 import {
@@ -274,10 +275,21 @@ export function registerNoteTools(server: McpServer) {
         )
         .optional()
         .describe("Base64エンコードされた画像の配列"),
+      eyecatch: z
+        .union([
+          z.string().describe("アイキャッチ画像のファイル名（images配列に含まれる画像を指定）"),
+          z.object({
+            fileName: z.string().describe("ファイル名"),
+            base64: z.string().describe("Base64エンコードされた画像データ"),
+            mimeType: z.string().optional().describe("MIMEタイプ"),
+          }),
+        ])
+        .optional()
+        .describe("アイキャッチ画像（ファイル名文字列、またはBase64画像データオブジェクト）"),
       tags: z.array(z.string()).optional().describe("タグ（最大10個）"),
       id: z.string().optional().describe("既存の下書きID（既存の下書きを更新する場合）"),
     },
-    async ({ title, body, bodyFormat, images, tags, id }) => {
+    async ({ title, body, bodyFormat, images, eyecatch, tags, id }) => {
       try {
         if (!hasAuth()) {
           return createAuthErrorResponse();
@@ -294,11 +306,43 @@ export function registerNoteTools(server: McpServer) {
 
         // 画像をアップロードしてURLを取得
         const uploadedImages = new Map<string, string>();
+        let eyecatchImageUrl: string | null = null;
+        let eyecatchImageBuffer: Buffer | null = null;
+        let eyecatchMimeType: string = "image/png";
 
-        if (images && images.length > 0) {
-          console.error(`${images.length}件の画像をアップロード中...`);
+        // eyecatchパラメータを正規化
+        const eyecatchFileName = typeof eyecatch === "string"
+          ? eyecatch
+          : eyecatch?.fileName || null;
 
-          for (const img of images) {
+        const allImages = [...(images || [])];
+        if (typeof eyecatch === "object" && eyecatch?.base64) {
+          eyecatchImageBuffer = Buffer.from(eyecatch.base64, "base64");
+          eyecatchMimeType = eyecatch.mimeType || "image/png";
+          allImages.push({
+            fileName: eyecatch.fileName,
+            base64: eyecatch.base64,
+            mimeType: eyecatch.mimeType,
+          });
+        }
+
+        // ファイル名指定の場合、images配列からeyecatch用Bufferを取得
+        if (eyecatchFileName && !eyecatchImageBuffer) {
+          const baseName = path.basename(eyecatchFileName.trim());
+          const matchingImg = (images || []).find(
+            (img: { fileName: string }) =>
+              img.fileName === eyecatchFileName || path.basename(img.fileName) === baseName
+          );
+          if (matchingImg?.base64) {
+            eyecatchImageBuffer = Buffer.from(matchingImg.base64, "base64");
+            eyecatchMimeType = matchingImg.mimeType || "image/png";
+          }
+        }
+
+        if (allImages.length > 0) {
+          console.error(`${allImages.length}件の画像をアップロード中...`);
+
+          for (const img of allImages) {
             try {
               const imageBuffer = Buffer.from(img.base64, "base64");
               const fileName = img.fileName;
@@ -396,6 +440,13 @@ export function registerNoteTools(server: McpServer) {
               console.error(`画像アップロードエラー: ${img.fileName}`, e.message);
             }
           }
+        }
+
+        // eyecatch画像のURLを取得
+        if (eyecatchFileName) {
+          const baseName = path.basename(eyecatchFileName.trim());
+          eyecatchImageUrl = uploadedImages.get(baseName) || uploadedImages.get(eyecatchFileName) || null;
+          console.error(`アイキャッチ検索: fileName=${eyecatchFileName}, baseName=${baseName}, found=${!!eyecatchImageUrl}`);
         }
 
         // 本文内の画像参照をアップロードしたURLに置換
@@ -543,6 +594,7 @@ export function registerNoteTools(server: McpServer) {
         }
 
         // 新規作成の場合、まず空の下書きを作成
+        let noteKey: string | null = null;
         if (!id) {
           console.error("新規下書きを作成します...");
 
@@ -566,8 +618,8 @@ export function registerNoteTools(server: McpServer) {
 
           if (createResult.data?.id) {
             id = createResult.data.id.toString();
-            const key = createResult.data.key || `n${id}`;
-            console.error(`下書き作成成功: ID=${id}, key=${key}`);
+            noteKey = createResult.data.key || null;
+            console.error(`下書き作成成功: ID=${id}, key=${noteKey || `n${id}`}`);
           } else {
             throw new Error("下書きの作成に失敗しました");
           }
@@ -604,10 +656,10 @@ export function registerNoteTools(server: McpServer) {
 
         console.error(`HTML変換完了 (${htmlBody.length} chars)`);
 
-        // 下書きを更新（画像付き本文）
+        // 下書きを更新
         console.error(`下書きを更新します (ID: ${id})`);
 
-        const updateData = {
+        const updateData: Record<string, unknown> = {
           body: htmlBody || "",
           body_length: (htmlBody || "").length,
           name: title || "無題",
@@ -625,7 +677,68 @@ export function registerNoteTools(server: McpServer) {
           headers
         );
 
-        const noteKey = `n${id}`;
+        // アイキャッチ画像を専用エンドポイントでアップロード
+        if (eyecatchImageBuffer && id) {
+          try {
+            const sanitizedNoteId = id.replace(/[\r\n]/g, "");
+            if (!/^\d+$/.test(sanitizedNoteId)) {
+              throw new Error(`Invalid note ID format: ${id}`);
+            }
+
+            const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+            const safeMimeType = ALLOWED_IMAGE_TYPES.includes(eyecatchMimeType)
+              ? eyecatchMimeType
+              : "image/png";
+
+            console.error("アイキャッチ画像を専用エンドポイントでアップロード中...");
+
+            const boundary = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
+            const formParts: Buffer[] = [];
+
+            // note_id フィールド
+            formParts.push(Buffer.from(
+              `--${boundary}\r\n` +
+              `Content-Disposition: form-data; name="note_id"\r\n\r\n` +
+              `${sanitizedNoteId}\r\n`
+            ));
+
+            // file フィールド
+            formParts.push(Buffer.from(
+              `--${boundary}\r\n` +
+              `Content-Disposition: form-data; name="file"; filename="blob"\r\n` +
+              `Content-Type: ${safeMimeType}\r\n\r\n`
+            ));
+            formParts.push(eyecatchImageBuffer);
+            formParts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+
+            const formBody = Buffer.concat(formParts);
+
+            const eyecatchHeaders = buildAuthHeaders();
+            eyecatchHeaders["Content-Type"] = `multipart/form-data; boundary=${boundary}`;
+            eyecatchHeaders["Content-Length"] = formBody.length.toString();
+            eyecatchHeaders["X-Requested-With"] = "XMLHttpRequest";
+            eyecatchHeaders["Origin"] = "https://editor.note.com";
+            eyecatchHeaders["Referer"] = "https://editor.note.com/";
+
+            const eyecatchRes = await fetch(
+              `${API_BASE_URL}/v1/image_upload/note_eyecatch`,
+              { method: "POST", headers: eyecatchHeaders, body: formBody }
+            );
+
+            if (eyecatchRes.status === 201) {
+              console.error("アイキャッチ画像の設定に成功しました");
+            } else {
+              const errText = await eyecatchRes.text().catch(() => "");
+              console.error(`アイキャッチ設定失敗: ${eyecatchRes.status} ${errText}`);
+            }
+          } catch (eyecatchError) {
+            console.error(`アイキャッチ画像の設定に失敗: ${eyecatchError}`);
+          }
+        }
+
+        if (!noteKey) {
+          noteKey = `n${id}`;
+        }
         return createSuccessResponse({
           success: true,
           message: "画像付き記事を下書き保存しました",
@@ -637,6 +750,7 @@ export function registerNoteTools(server: McpServer) {
             url,
           })),
           imageCount: uploadedImages.size,
+          eyecatchImage: eyecatchImageUrl || null,
           data: data,
         });
       } catch (error) {

@@ -1504,13 +1504,16 @@ server.tool(
       .optional()
       .describe("Base64エンコードされた画像の配列"),
     eyecatch: z
-      .object({
-        fileName: z.string().describe("ファイル名"),
-        base64: z.string().describe("Base64エンコードされた画像データ"),
-        mimeType: z.string().optional().describe("MIMEタイプ"),
-      })
+      .union([
+        z.string().describe("アイキャッチ画像のファイル名（images配列に含まれる画像を指定）"),
+        z.object({
+          fileName: z.string().describe("ファイル名"),
+          base64: z.string().describe("Base64エンコードされた画像データ"),
+          mimeType: z.string().optional().describe("MIMEタイプ"),
+        }),
+      ])
       .optional()
-      .describe("アイキャッチ画像"),
+      .describe("アイキャッチ画像（ファイル名文字列、またはBase64画像データオブジェクト）"),
     tags: z.array(z.string()).optional().describe("タグ（最大10個）"),
     id: z
       .string()
@@ -1532,15 +1535,38 @@ server.tool(
       }
 
       const uploadedImages = new Map<string, string>();
+      let eyecatchImageUrl: string | null = null;
+      let eyecatchImageBuffer: Buffer | null = null;
+      let eyecatchMimeType: string = "image/png";
+
+      // eyecatchパラメータを正規化
+      const eyecatchFileName = typeof eyecatch === "string"
+        ? eyecatch
+        : eyecatch?.fileName || null;
 
       // 画像をアップロードしてURLを取得
       const allImages = [...(images || [])];
-      if (eyecatch?.base64) {
+      if (typeof eyecatch === "object" && eyecatch?.base64) {
+        eyecatchImageBuffer = Buffer.from(eyecatch.base64, "base64");
+        eyecatchMimeType = eyecatch.mimeType || "image/png";
         allImages.push({
           fileName: eyecatch.fileName,
           base64: eyecatch.base64,
           mimeType: eyecatch.mimeType,
         });
+      }
+
+      // ファイル名指定の場合、images配列からeyecatch用Bufferを取得
+      if (eyecatchFileName && !eyecatchImageBuffer) {
+        const baseName = path.basename(eyecatchFileName.trim());
+        const matchingImg = (images || []).find(
+          (img: { fileName: string }) =>
+            img.fileName === eyecatchFileName || path.basename(img.fileName) === baseName
+        );
+        if (matchingImg?.base64) {
+          eyecatchImageBuffer = Buffer.from(matchingImg.base64, "base64");
+          eyecatchMimeType = matchingImg.mimeType || "image/png";
+        }
       }
 
       if (allImages.length > 0) {
@@ -1685,6 +1711,13 @@ server.tool(
         }
       }
 
+      // eyecatch画像のURLを取得
+      if (eyecatchFileName) {
+        const baseName = path.basename(eyecatchFileName.trim());
+        eyecatchImageUrl = uploadedImages.get(baseName) || uploadedImages.get(eyecatchFileName) || null;
+        console.error(`アイキャッチ検索: fileName=${eyecatchFileName}, baseName=${baseName}, found=${!!eyecatchImageUrl}`);
+      }
+
       // 本文内の画像参照をアップロードしたURLに置換
       let processedBody = body;
 
@@ -1755,6 +1788,7 @@ server.tool(
 
       // 新規作成の場合、まず空の下書きを作成
       let noteId = id;
+      let noteKey: string | null = null;
       if (!noteId) {
         console.error("新規下書きを作成します...");
 
@@ -1775,8 +1809,9 @@ server.tool(
 
         if (createResult.data?.id) {
           noteId = createResult.data.id.toString();
+          noteKey = createResult.data.key || null;
           console.error(
-            `下書き作成成功: ID=${noteId}, key=${createResult.data.key || `n${noteId}`}`,
+            `下書き作成成功: ID=${noteId}, key=${noteKey || `n${noteId}`}`,
           );
         } else {
           throw new Error("下書きの作成に失敗しました");
@@ -1808,7 +1843,7 @@ server.tool(
       });
 
       // 下書きを更新
-      const updateData = {
+      const updateData: Record<string, unknown> = {
         body: htmlBody || "",
         body_length: (htmlBody || "").length,
         name: title || "無題",
@@ -1823,7 +1858,79 @@ server.tool(
         true,
       );
 
-      const noteKey = `n${noteId}`;
+      // アイキャッチ画像を専用エンドポイントでアップロード
+      if (eyecatchImageBuffer && noteId) {
+        try {
+          const sanitizedNoteId = noteId.replace(/[\r\n]/g, "");
+          if (!/^\d+$/.test(sanitizedNoteId)) {
+            throw new Error(`Invalid note ID format: ${noteId}`);
+          }
+
+          const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+          const safeMimeType = ALLOWED_IMAGE_TYPES.includes(eyecatchMimeType)
+            ? eyecatchMimeType
+            : "image/png";
+
+          console.error("アイキャッチ画像を専用エンドポイントでアップロード中...");
+
+          const boundary = `----WebKitFormBoundary${Math.random().toString(36).substring(2)}`;
+          const formParts: Buffer[] = [];
+
+          // note_id フィールド
+          formParts.push(Buffer.from(
+            `--${boundary}\r\n` +
+            `Content-Disposition: form-data; name="note_id"\r\n\r\n` +
+            `${sanitizedNoteId}\r\n`
+          ));
+
+          // file フィールド
+          formParts.push(Buffer.from(
+            `--${boundary}\r\n` +
+            `Content-Disposition: form-data; name="file"; filename="blob"\r\n` +
+            `Content-Type: ${safeMimeType}\r\n\r\n`
+          ));
+          formParts.push(eyecatchImageBuffer);
+          formParts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+
+          const formBody = Buffer.concat(formParts);
+
+          const eyecatchHeaders: Record<string, string> = {
+            "Content-Type": `multipart/form-data; boundary=${boundary}`,
+            "Content-Length": formBody.length.toString(),
+            "X-Requested-With": "XMLHttpRequest",
+            Origin: "https://editor.note.com",
+            Referer: "https://editor.note.com/",
+          };
+          if (localActiveSessionCookie) {
+            eyecatchHeaders["Cookie"] = localActiveSessionCookie;
+          } else if (NOTE_SESSION_V5) {
+            eyecatchHeaders["Cookie"] = `_note_session_v5=${NOTE_SESSION_V5}`;
+          }
+          if (localActiveXsrfToken) {
+            eyecatchHeaders["X-XSRF-TOKEN"] = localActiveXsrfToken;
+          } else if (NOTE_XSRF_TOKEN) {
+            eyecatchHeaders["X-XSRF-TOKEN"] = NOTE_XSRF_TOKEN;
+          }
+
+          const eyecatchRes = await fetch(
+            `${API_BASE_URL}/v1/image_upload/note_eyecatch`,
+            { method: "POST", headers: eyecatchHeaders, body: formBody }
+          );
+
+          if (eyecatchRes.status === 201) {
+            console.error("アイキャッチ画像の設定に成功しました");
+          } else {
+            const errText = await eyecatchRes.text().catch(() => "");
+            console.error(`アイキャッチ設定失敗: ${eyecatchRes.status} ${errText}`);
+          }
+        } catch (eyecatchError) {
+          console.error(`アイキャッチ画像の設定に失敗: ${eyecatchError}`);
+        }
+      }
+
+      if (!noteKey) {
+        noteKey = `n${noteId}`;
+      }
       return {
         content: [
           {
@@ -1839,6 +1946,7 @@ server.tool(
                   ([name, url]) => ({ name, url }),
                 ),
                 imageCount: uploadedImages.size,
+                eyecatchImage: eyecatchImageUrl || null,
                 data: data,
               },
               null,
