@@ -118,7 +118,7 @@ export function convertMarkdownToHtml(markdown: string): string {
         if (trimmedLine.match(/^__CODE_BLOCK_\d+__$/)) {
           if (inList) {
             result.push(
-              `<${inList}>${listItems.map((item) => `<li>${item}</li>`).join("")}</${inList}>`
+              `<${inList}>${listItems.map((item) => `<li><p>${item}</p></li>`).join("")}</${inList}>`
             );
             listItems = [];
             inList = null;
@@ -139,7 +139,7 @@ export function convertMarkdownToHtml(markdown: string): string {
         if (h1Match) {
           if (inList) {
             result.push(
-              `<${inList}>${listItems.map((item) => `<li>${item}</li>`).join("")}</${inList}>`
+              `<${inList}>${listItems.map((item) => `<li><p>${item}</p></li>`).join("")}</${inList}>`
             );
             listItems = [];
             inList = null;
@@ -158,7 +158,7 @@ export function convertMarkdownToHtml(markdown: string): string {
         if (h2Match) {
           if (inList) {
             result.push(
-              `<${inList}>${listItems.map((item) => `<li>${item}</li>`).join("")}</${inList}>`
+              `<${inList}>${listItems.map((item) => `<li><p>${item}</p></li>`).join("")}</${inList}>`
             );
             listItems = [];
             inList = null;
@@ -177,7 +177,7 @@ export function convertMarkdownToHtml(markdown: string): string {
         if (h3Match) {
           if (inList) {
             result.push(
-              `<${inList}>${listItems.map((item) => `<li>${item}</li>`).join("")}</${inList}>`
+              `<${inList}>${listItems.map((item) => `<li><p>${item}</p></li>`).join("")}</${inList}>`
             );
             listItems = [];
             inList = null;
@@ -196,7 +196,7 @@ export function convertMarkdownToHtml(markdown: string): string {
         if (h4PlusMatch) {
           if (inList) {
             result.push(
-              `<${inList}>${listItems.map((item) => `<li>${item}</li>`).join("")}</${inList}>`
+              `<${inList}>${listItems.map((item) => `<li><p>${item}</p></li>`).join("")}</${inList}>`
             );
             listItems = [];
             inList = null;
@@ -214,7 +214,7 @@ export function convertMarkdownToHtml(markdown: string): string {
         if (trimmedLine.match(/^-{3,}$/) || trimmedLine.match(/^\*{3,}$/)) {
           if (inList) {
             result.push(
-              `<${inList}>${listItems.map((item) => `<li>${item}</li>`).join("")}</${inList}>`
+              `<${inList}>${listItems.map((item) => `<li><p>${item}</p></li>`).join("")}</${inList}>`
             );
             listItems = [];
             inList = null;
@@ -233,7 +233,7 @@ export function convertMarkdownToHtml(markdown: string): string {
         if (quoteMatch) {
           if (inList) {
             result.push(
-              `<${inList}>${listItems.map((item) => `<li>${item}</li>`).join("")}</${inList}>`
+              `<${inList}>${listItems.map((item) => `<li><p>${item}</p></li>`).join("")}</${inList}>`
             );
             listItems = [];
             inList = null;
@@ -256,7 +256,7 @@ export function convertMarkdownToHtml(markdown: string): string {
             inBlockquote = false;
           }
           if (inList === "ol") {
-            result.push(`<ol>${listItems.map((item) => `<li>${item}</li>`).join("")}</ol>`);
+            result.push(`<ol>${listItems.map((item) => `<li><p>${item}</p></li>`).join("")}</ol>`);
             listItems = [];
           }
           inList = "ul";
@@ -273,7 +273,7 @@ export function convertMarkdownToHtml(markdown: string): string {
             inBlockquote = false;
           }
           if (inList === "ul") {
-            result.push(`<ul>${listItems.map((item) => `<li>${item}</li>`).join("")}</ul>`);
+            result.push(`<ul>${listItems.map((item) => `<li><p>${item}</p></li>`).join("")}</ul>`);
             listItems = [];
           }
           inList = "ol";
@@ -284,7 +284,7 @@ export function convertMarkdownToHtml(markdown: string): string {
         // リスト以外の行が来たらリストを閉じる
         if (inList) {
           result.push(
-            `<${inList}>${listItems.map((item) => `<li>${item}</li>`).join("")}</${inList}>`
+            `<${inList}>${listItems.map((item) => `<li><p>${item}</p></li>`).join("")}</${inList}>`
           );
           listItems = [];
           inList = null;
@@ -297,7 +297,7 @@ export function convertMarkdownToHtml(markdown: string): string {
       // 残りのリスト・引用を閉じる
       if (inList) {
         result.push(
-          `<${inList}>${listItems.map((item) => `<li>${item}</li>`).join("")}</${inList}>`
+          `<${inList}>${listItems.map((item) => `<li><p>${item}</p></li>`).join("")}</${inList}>`
         );
       }
       if (inBlockquote) {
