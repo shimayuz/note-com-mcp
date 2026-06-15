@@ -321,7 +321,7 @@ async function createNoteWithPlaywright(
     page.setDefaultTimeout(60000);
 
     // ログイン
-    await page.goto("https://note.com/login", { waitUntil: "networkidle" });
+    await page.goto("https://note.com/login", { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(2000);
 
     const inputs = await page.$$('input:not([type="hidden"])');
@@ -631,7 +631,7 @@ export function registerPublishTools(server: McpServer): void {
         page.setDefaultTimeout(60000);
 
         // ログイン
-        await page.goto("https://note.com/login", { waitUntil: "networkidle" });
+        await page.goto("https://note.com/login", { waitUntil: "domcontentloaded" });
         await page.waitForTimeout(2000);
 
         const inputs = await page.$$('input:not([type="hidden"])');
