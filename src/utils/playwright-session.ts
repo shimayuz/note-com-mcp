@@ -43,6 +43,18 @@ export interface SessionCookieResult {
 }
 
 async function ensureEmailLoginForm(page: Page, timeoutMs: number) {
+  // 現行 note.com の /login はメール/パスワード入力欄を直接表示するため、
+  // 「メールアドレスでログイン」への切替ボタンは存在しない。
+  // ★ 旧実装は存在しないボタン候補6個を perSelectorTimeout(=10s)ずつ待ち 60s 浪費していた。
+  //   まずパスワード欄の有無で「フォームが直接表示済みか」を判定し、出ていれば即 return する。
+  const passwordInput = page.locator("input[type='password']").first();
+  try {
+    await passwordInput.waitFor({ state: "visible", timeout: Math.min(timeoutMs, 8_000) });
+    return; // フォームが直接表示されている（現行UI）→ 切替不要
+  } catch {
+    // パスワード欄が未表示 → 旧UI/別導線として「メールでログイン」ボタンを探す
+  }
+
   const emailSelectors = [
     "button:has-text('メールアドレスでログイン')",
     "button:has-text('メールアドレスでサインイン')",
@@ -52,12 +64,12 @@ async function ensureEmailLoginForm(page: Page, timeoutMs: number) {
     "button[data-testid='mail-login-button']",
   ];
 
-  const perSelectorTimeout = Math.max(Math.floor(timeoutMs / emailSelectors.length), 3_000);
-
+  // 任意UIなので存在チェックで非マッチ即スキップ＋短いタイムアウト（合計が膨らまないように）。
   for (const selector of emailSelectors) {
-    const locator = page.locator(selector);
+    const locator = page.locator(selector).first();
+    if (!(await locator.count())) continue;
     try {
-      await locator.waitFor({ state: "visible", timeout: perSelectorTimeout });
+      await locator.waitFor({ state: "visible", timeout: 2_000 });
       await locator.click();
       await page.waitForTimeout(1_000);
       break;
@@ -297,25 +309,28 @@ export async function refreshSessionWithPlaywright(
         await passwordLocator.fill(env.NOTE_PASSWORD);
       }
 
-      // ログインボタンクリック
+      // ログイン前のセッションCookie値を控える。
+      // note.com は未ログインでも _note_session_v5 を発行するため「存在」では認証判定にならない
+      // （= 旧 cookie ポーリングは偽陽性だった）。成功時は値が回転する／URL が /login を離れる、で判定する。
+      const preCookies = await context.cookies("https://note.com");
+      const preSession =
+        preCookies.find((c) => c.name === "_note_session_v5")?.value ?? "";
+
+      // ログインボタンをクリック。
+      // ★ note.com のログインボタンは type="button"（API 認証・client-side 遷移）で
+      //   top-level navigation を起こさない。そのため waitForNavigation / networkidle は
+      //   発火せず使えない（旧実装が navigationTimeoutMs=60s でタイムアウトしていた根本原因）。
       let submitClicked = false;
       const submitSelectors = [
         "button[type='submit']",
         'button:has-text("ログイン")',
         "button[data-testid='login-button']",
       ];
-
       for (const selector of submitSelectors) {
-        const locator = page.locator(selector);
+        const locator = page.locator(selector).first();
         if (await locator.count()) {
           try {
-            await Promise.all([
-              page.waitForNavigation({
-                waitUntil: "networkidle",
-                timeout: merged.navigationTimeoutMs,
-              }),
-              locator.first().click(),
-            ]);
+            await locator.click(); // Playwright が enabled 化を auto-wait する
             submitClicked = true;
             break;
           } catch (error) {
@@ -323,35 +338,43 @@ export async function refreshSessionWithPlaywright(
           }
         }
       }
-
       if (!submitClicked) {
         await page.keyboard.press("Enter");
-        await page.waitForNavigation({
-          waitUntil: "networkidle",
-          timeout: merged.navigationTimeoutMs,
-        });
       }
 
-      // --- セッションCookie取得完了をポーリングで即検知 ---
-      const cookieWaitStart = Date.now();
-      const cookieWaitMax = 10_000; // 最大10秒
+      // --- ログイン成功をポーリングで判定（waitForNavigation/networkidle は使わない） ---
+      // 成功シグナル: ① URL が /login を離れる、または ② セッションCookie値がログイン前から回転する。
+      const loginWaitStart = Date.now();
       let gotSession = false;
-
-      while (Date.now() - cookieWaitStart < cookieWaitMax) {
-        const cookies = await context.cookies("https://note.com");
-        gotSession = cookies.some((c) => c.name === "_note_session_v5" && c.value !== "");
-        if (gotSession) break;
+      while (Date.now() - loginWaitStart < merged.navigationTimeoutMs) {
+        let leftLogin = false;
+        try {
+          leftLogin = !new URL(page.url()).pathname.startsWith("/login");
+        } catch {
+          leftLogin = false;
+        }
+        const cur =
+          (await context.cookies("https://note.com")).find(
+            (c) => c.name === "_note_session_v5"
+          )?.value ?? "";
+        if (leftLogin || (cur !== "" && cur !== preSession)) {
+          gotSession = true;
+          break;
+        }
         await page.waitForTimeout(200); // 200msごとにポーリング
       }
 
       if (!gotSession) {
-        throw new Error("ログイン後にセッションCookieが取得できませんでした");
+        throw new Error(
+          "ログインに失敗しました（URL遷移・セッション更新が検知できませんでした）"
+        );
       }
 
-      // ダッシュボードに遷移してnote_gql_auth_token (JWT) を取得
+      // ダッシュボードに遷移してnote_gql_auth_token (JWT) を取得。
+      // ここも SPA で networkidle が発火しないため domcontentloaded を使う。
       try {
         await page.goto("https://note.com/dashboard", {
-          waitUntil: "networkidle",
+          waitUntil: "domcontentloaded",
           timeout: 15_000,
         });
       } catch {
