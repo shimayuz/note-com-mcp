@@ -274,16 +274,28 @@ export async function refreshSessionWithPlaywright(
     });
 
     const page = await context.newPage();
-    await page.goto("https://note.com/login", { waitUntil: "networkidle" });
+    // ★ note.com/login の "networkidle" は分析ビーコン等が継続接続するため環境によって
+    //   30-60s 経っても発火せず goto がタイムアウトする（Mac mini で再現）。
+    //   domcontentloaded で開き、フォームの可用性は ensureEmailLoginForm / 入力リトライで担保する。
+    await page.goto("https://note.com/login", { waitUntil: "domcontentloaded" });
     await ensureEmailLoginForm(page, merged.navigationTimeoutMs);
 
     if (hasCredentials) {
       // --- 自動ログイン ---
-      const inputs = await page.$$('input:not([type="hidden"])');
-      if (inputs.length >= 2) {
-        await inputs[0].fill(env.NOTE_EMAIL);
-        await inputs[1].fill(env.NOTE_PASSWORD);
-      } else {
+      const submitButton = page
+        .locator(
+          "button[type='submit'], button:has-text('ログイン'), button[data-testid='login-button']"
+        )
+        .first();
+
+      // メール/パスワードを入力する（visible な2入力を優先、無ければセレクタで特定）。
+      const fillForm = async (): Promise<void> => {
+        const inputs = await page.$$('input:not([type="hidden"])');
+        if (inputs.length >= 2) {
+          await inputs[0].fill(env.NOTE_EMAIL);
+          await inputs[1].fill(env.NOTE_PASSWORD);
+          return;
+        }
         const emailLocator = await waitForFirstVisibleLocator(
           page,
           [
@@ -307,6 +319,24 @@ export async function refreshSessionWithPlaywright(
           merged.navigationTimeoutMs
         );
         await passwordLocator.fill(env.NOTE_PASSWORD);
+      };
+
+      // ★ domcontentloaded 直後は Vue のハイドレーションが未完了で、fill しても値が
+      //   反映されずログインボタンが無効のままになることがある。「入力 → ボタンが有効化されるか」
+      //   を条件に、有効化されなければ再入力してリトライする（任意の固定 sleep に頼らない条件ベース待ち）。
+      const fillDeadline = Date.now() + merged.navigationTimeoutMs;
+      while (Date.now() < fillDeadline) {
+        await fillForm();
+        let enabled = false;
+        for (let i = 0; i < 25; i++) {
+          if (await submitButton.isEnabled().catch(() => false)) {
+            enabled = true;
+            break;
+          }
+          await page.waitForTimeout(100); // 最大2.5sでボタン有効化を待つ
+        }
+        if (enabled) break;
+        await page.waitForTimeout(300); // 未有効化なら再ハイドレーション待ちして再入力
       }
 
       // ログイン前のセッションCookie値を控える。
