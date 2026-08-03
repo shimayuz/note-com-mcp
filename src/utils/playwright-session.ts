@@ -91,6 +91,36 @@ const DEFAULT_OPTIONS: Required<PlaywrightSessionOptions> = {
   navigationTimeoutMs: Number.isNaN(defaultTimeout) ? 60_000 : defaultTimeout,
 };
 
+/**
+ * ログイン中のユーザー名を取得する。未ログインなら null。
+ *
+ * ★ note.com は未ログインでも `_note_session_v5` を発行するため、Cookie の有無では
+ *   ログイン判定にならない（自動ログイン側のコメントで既に指摘されているとおり）。
+ *   current_user API が実ユーザーを返したかどうかを唯一の判定材料にする。
+ *   未ログイン時は `data` が文字列（"認証に失敗しました"）で返るので、
+ *   オブジェクトかどうかまで確認する。
+ */
+async function fetchCurrentUser(page: Page): Promise<string | null> {
+  try {
+    return await page.evaluate(async () => {
+      try {
+        const res = await fetch("https://note.com/api/v2/current_user", {
+          credentials: "include",
+        });
+        if (!res.ok) return null;
+        const json = await res.json();
+        if (!json || typeof json.data !== "object" || json.data === null) return null;
+        return json.data.urlname || json.data.id || null;
+      } catch {
+        return null;
+      }
+    });
+  } catch {
+    // ページ遷移中は evaluate が失敗することがある
+    return null;
+  }
+}
+
 async function waitForFirstVisibleLocator(
   page: Page,
   selectors: string[],
@@ -149,26 +179,11 @@ async function extractAndSaveCookies(
   process.env.NOTE_ALL_COOKIES = concatenatedCookies;
 
   // ユーザーID取得（失敗しても続行）
-  let userKey: string | null = null;
-  try {
-    userKey = await page.evaluate(async () => {
-      try {
-        const res = await fetch("https://note.com/api/v2/current_user", {
-          credentials: "include",
-        });
-        if (!res.ok) return null;
-        const json = await res.json();
-        return json?.data?.urlname || json?.data?.id || null;
-      } catch {
-        return null;
-      }
-    });
-    if (userKey) {
-      setActiveUserKey(userKey);
-      process.env.NOTE_USER_ID = userKey;
-    }
-  } catch {
-    // ユーザー情報取得は必須ではない
+  // ログイン判定と同じ current_user API なので fetchCurrentUser に集約する
+  const userKey = await fetchCurrentUser(page);
+  if (userKey) {
+    setActiveUserKey(userKey);
+    process.env.NOTE_USER_ID = userKey;
   }
 
   // .envファイルに書き戻し
@@ -414,49 +429,37 @@ export async function refreshSessionWithPlaywright(
       // --- 手動ログイン ---
       console.error("📝 ブラウザでnote.comにログインしてください...");
 
-      let loginComplete = false;
+      console.error("   メール/パスワードでも、X・Google 等の連携ログインでも構いません");
+
+      // ★ 旧実装は「_note_session_v5 が存在する」「URL が /login を離れた」で完了と判定していたが、
+      //   どちらも偽陽性になる:
+      //   - note.com は未ログインの訪問者にも _note_session_v5 を発行する
+      //     （＝自動ログイン側で既に指摘されている偽陽性と同じもの）
+      //   - /login からのリダイレクトや連携ログインの外部遷移でも URL は変わる
+      //   実際、ページを開いた直後の 1〜2 秒で「ログイン完了」と誤検知し、
+      //   未ログインのままの無効なセッションを保存してしまう。
+      //   current_user API が実ユーザーを返したときだけ完了とみなす。
+      let loggedInUser: string | null = null;
       const startTime = Date.now();
       const maxWaitTime = merged.navigationTimeoutMs;
 
-      while (!loginComplete && Date.now() - startTime < maxWaitTime) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
+      while (!loggedInUser && Date.now() - startTime < maxWaitTime) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
 
-        try {
-          const cookies = await context.cookies("https://note.com");
-          const hasSession = cookies.some(
-            (c) => c.name === "_note_session_v5" && c.value !== ""
-          );
+        loggedInUser = await fetchCurrentUser(page);
 
-          if (hasSession) {
-            loginComplete = true;
-            console.error("✅ ログインを検知しました！");
-            break;
-          }
-
-          const currentUrl = page.url();
-          const isLoginPage = new URL(currentUrl).pathname.startsWith("/login");
-          if (!isLoginPage && currentUrl.includes("note.com")) {
-            // ログインページから離れたら少し待ってから再確認
-            await new Promise((resolve) => setTimeout(resolve, 2000));
-            const retryCheck = await context.cookies("https://note.com");
-            if (retryCheck.some((c) => c.name === "_note_session_v5" && c.value !== "")) {
-              loginComplete = true;
-              console.error("✅ ログインを検知しました！");
-            }
-          }
-
+        if (!loggedInUser) {
           const elapsed = Math.floor((Date.now() - startTime) / 1000);
           if (elapsed % 10 === 0 && elapsed > 0) {
             console.error(`⏳ ログイン待機中... (${elapsed}秒経過)`);
           }
-        } catch {
-          break;
         }
       }
 
-      if (!loginComplete) {
+      if (!loggedInUser) {
         throw new Error("ログインタイムアウト: 指定時間内にログインが完了しませんでした");
       }
+      console.error(`✅ ログインを確認しました: ${loggedInUser}`);
     }
 
     // Cookie抽出・保存・ブラウザ終了
