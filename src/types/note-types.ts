@@ -152,3 +152,27 @@ export interface FormattedLike {
       };
   createdAt: string;
 }
+
+export interface Sticker {
+  id?: string;
+  sticker_id?: string;
+  sticker_type?: string;
+  image_url?: string;
+  user?: NoteUser;
+  createdAt?: string;
+  created_at?: string;
+}
+
+export interface FormattedSticker {
+  id: string;
+  stickerType: string;
+  imageUrl: string;
+  user:
+    | string
+    | {
+        id?: string;
+        nickname?: string;
+        urlname?: string;
+      };
+  createdAt: string;
+}

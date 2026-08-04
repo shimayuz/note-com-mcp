@@ -290,6 +290,30 @@ interface FormattedLike {
   createdAt: string;
 }
 
+interface Sticker {
+  id?: string;
+  sticker_id?: string;
+  sticker_type?: string;
+  image_url?: string;
+  user?: NoteUser;
+  createdAt?: string;
+  created_at?: string;
+}
+
+interface FormattedSticker {
+  id: string;
+  stickerType: string;
+  imageUrl: string;
+  user:
+    | string
+    | {
+        id?: string;
+        nickname?: string;
+        urlname?: string;
+      };
+  createdAt: string;
+}
+
 // noteへのログイン処理を行う関数
 async function loginToNote(): Promise<boolean> {
   if (!NOTE_EMAIL || !NOTE_PASSWORD) {
@@ -2279,6 +2303,163 @@ server.tool(
           {
             type: "text",
             text: `スキの削除に失敗しました: ${error}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// 11.5. スティッカー一覧取得ツール
+server.tool(
+  "get-note-stickers",
+  "記事に送られたスティッカー一覧を取得する",
+  {
+    noteId: z.string().describe("記事ID（例: n4f0c7b884789）"),
+  },
+  async ({ noteId }) => {
+    try {
+      const data = await noteApiRequest(`/v3/notes/${noteId}/stickers`);
+
+      let formattedStickers: FormattedSticker[] = [];
+      if (data.data && data.data.stickers) {
+        formattedStickers = data.data.stickers.map((sticker: Sticker) => ({
+          id: sticker.id || sticker.sticker_id || "",
+          stickerType: sticker.sticker_type || "",
+          imageUrl: sticker.image_url || "",
+          user: sticker.user?.nickname || "匿名ユーザー",
+          createdAt: sticker.createdAt || sticker.created_at || "",
+        }));
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                noteId,
+                stickers: formattedStickers,
+                totalCount: formattedStickers.length,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `スティッカー一覧の取得に失敗しました: ${error}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// 11.6. スティッカーを送るツール
+server.tool(
+  "send-sticker",
+  "記事にスティッカーを送る",
+  {
+    noteId: z.string().describe("記事ID（例: n4f0c7b884789）"),
+    stickerType: z
+      .string()
+      .describe(
+        "スティッカーの種類（例: heart, clap, fire, thumbsup, smile, party, star, sparkles, rocket, muscle）"
+      ),
+  },
+  async ({ noteId, stickerType }) => {
+    try {
+      if (!hasAuth()) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "認証情報がないため、スティッカーを送れません。.envファイルに認証情報を設定してください。",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const postData = {
+        sticker_type: stickerType,
+      };
+
+      await noteApiRequest(`/v3/notes/${noteId}/stickers`, "POST", postData, true);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: "スティッカーを送りました",
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `スティッカーの送信に失敗しました: ${error}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// 11.7. スティッカーを削除するツール
+server.tool(
+  "delete-sticker",
+  "記事に送ったスティッカーを削除する",
+  {
+    noteId: z.string().describe("記事ID（例: n4f0c7b884789）"),
+    stickerId: z.string().describe("削除するスティッカーID"),
+  },
+  async ({ noteId, stickerId }) => {
+    try {
+      if (!hasAuth()) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "認証情報がないため、スティッカーの削除ができません。.envファイルに認証情報を設定してください。",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      await noteApiRequest(
+        `/v3/notes/${noteId}/stickers/${stickerId}`,
+        "DELETE",
+        {},
+        true
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: "スティッカーを削除しました",
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `スティッカーの削除に失敗しました: ${error}`,
           },
         ],
         isError: true,

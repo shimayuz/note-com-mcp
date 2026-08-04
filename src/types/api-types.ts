@@ -1,4 +1,4 @@
-import { Note, Comment, Like } from "./note-types.js";
+import { Note, Comment, Like, Sticker } from "./note-types.js";
 import { NoteUser } from "./user-types.js";
 
 export interface Magazine {
@@ -40,6 +40,7 @@ export interface NoteApiResponse {
     magazines?: Magazine[];
     magazinesCount?: number;
     likes?: Like[];
+    stickers?: Sticker[];
     memberships?: any[];
     membership_summaries?: any[];
     circles?: any[];

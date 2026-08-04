@@ -8,6 +8,7 @@ import { registerImageTools } from "./image-tools.js";
 import { registerObsidianTools } from "./obsidian-tools.js";
 import { registerPublishTools } from "./publish-tools.js";
 import { registerNotionTools } from "./notion-tools.js";
+import { registerStickerTools } from "./sticker-tools.js";
 
 /**
  * すべてのツールをMCPサーバーに登録する
@@ -24,4 +25,5 @@ export function registerAllTools(server: McpServer): void {
   registerObsidianTools(server);
   registerPublishTools(server);
   registerNotionTools(server);
+  registerStickerTools(server);
 }

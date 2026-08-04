@@ -5,6 +5,8 @@ import {
   FormattedComment,
   Like,
   FormattedLike,
+  Sticker,
+  FormattedSticker,
 } from "../types/note-types.js";
 import { NoteUser, FormattedUser } from "../types/user-types.js";
 import { Magazine, FormattedMagazine } from "../types/api-types.js";
@@ -172,6 +174,17 @@ export function formatLike(like: Like): FormattedLike {
     id: like.id || "",
     user: like.user?.nickname || "匿名ユーザー",
     createdAt: like.createdAt || "",
+  };
+}
+
+// スティッカーデータのフォーマット
+export function formatSticker(sticker: Sticker): FormattedSticker {
+  return {
+    id: sticker.id || sticker.sticker_id || "",
+    stickerType: sticker.sticker_type || "",
+    imageUrl: sticker.image_url || "",
+    user: sticker.user?.nickname || "匿名ユーザー",
+    createdAt: sticker.createdAt || sticker.created_at || "",
   };
 }
 

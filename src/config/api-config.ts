@@ -34,6 +34,9 @@ export const API_ENDPOINTS = {
   MEMBERSHIP_PLANS: "/v2/circle/plans",
   CIRCLE: "/v2/circle",
 
+  // スティッカー
+  NOTE_STICKERS: "/v3/notes",
+
   // その他
   CATEGORIES: "/v2/categories",
   HASHTAGS: "/v2/hashtags",
