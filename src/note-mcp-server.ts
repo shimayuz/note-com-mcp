@@ -19,6 +19,11 @@ import {
 
 // Markdown converter utility
 import { convertMarkdownToNoteHtml, looksLikeHtml } from "./utils/markdown-converter.js";
+import {
+  checkHttpRequest,
+  findStartupProblem,
+  loadHttpGuardConfig,
+} from "./utils/http-guard.js";
 
 // ESMでの__dirnameの代替
 const __filename = fileURLToPath(import.meta.url);
@@ -2781,18 +2786,36 @@ async function main() {
       const HOST = process.env.MCP_HTTP_HOST || "127.0.0.1";
       const transports: Record<string, StreamableHTTPServerTransport> = {};
 
+      // アクセス制御の設定（Host / Origin / Bearerトークン）
+      const guardConfig = loadHttpGuardConfig();
+      const startupProblem = findStartupProblem(HOST, guardConfig);
+      if (startupProblem) {
+        console.error(`❌ ${startupProblem}`);
+        console.error(
+          "   このサーバーはnote.comのログイン済みセッションで動くため、認証なしで外部に公開できません。",
+        );
+        process.exit(1);
+      }
+
       const httpServer = http.createServer(async (req, res) => {
-        // CORSヘッダー
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader(
-          "Access-Control-Allow-Methods",
-          "GET, POST, DELETE, OPTIONS",
-        );
-        res.setHeader(
-          "Access-Control-Allow-Headers",
-          "Content-Type, mcp-session-id",
-        );
-        res.setHeader("Access-Control-Expose-Headers", "mcp-session-id");
+        // CORS: 許可リスト（MCP_ALLOWED_ORIGINS）にある Origin にだけ応答ヘッダーを返す
+        const requestOrigin = req.headers.origin;
+        if (
+          requestOrigin !== undefined &&
+          guardConfig.allowedOrigins.has(String(requestOrigin).toLowerCase())
+        ) {
+          res.setHeader("Access-Control-Allow-Origin", String(requestOrigin));
+          res.setHeader("Vary", "Origin");
+          res.setHeader(
+            "Access-Control-Allow-Methods",
+            "GET, POST, DELETE, OPTIONS",
+          );
+          res.setHeader(
+            "Access-Control-Allow-Headers",
+            "Content-Type, mcp-session-id, Authorization",
+          );
+          res.setHeader("Access-Control-Expose-Headers", "mcp-session-id");
+        }
 
         if (req.method === "OPTIONS") {
           res.writeHead(204);
@@ -2810,6 +2833,20 @@ async function main() {
         if (req.url !== "/mcp") {
           res.writeHead(404);
           res.end("Not Found");
+          return;
+        }
+
+        // Webページやネットワーク上の第三者からのリクエストを拒否する
+        const guard = checkHttpRequest(req, guardConfig);
+        if (!guard.ok) {
+          res.writeHead(guard.status, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              error: { code: -32000, message: guard.message },
+              id: null,
+            }),
+          );
           return;
         }
 

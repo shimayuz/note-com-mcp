@@ -1,6 +1,6 @@
 {
   "name": "note-mcp-server",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "MCP server for interacting with note.com API",
   "type": "module",
   "main": "build/note-mcp-server.js",

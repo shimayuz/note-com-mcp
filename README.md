@@ -83,6 +83,25 @@ node build/note-mcp-server.js --http
 
 デフォルトのバインドアドレスは`127.0.0.1`です。`MCP_HTTP_HOST`環境変数で変更できます。
 
+#### HTTPモードのアクセス制御（v2.2.0以降）
+
+このサーバーはnote.comのログイン済みセッションで動きます。HTTPモードに届いたリクエストはそのアカウントで実行されるため、次の検査を行います。
+
+| 検査 | 既定の動作 | 設定する環境変数 |
+|------|-----------|-----------------|
+| `Host`ヘッダー | `127.0.0.1` / `localhost` 宛て以外は403 | `MCP_ALLOWED_HOSTS`（カンマ区切り。例: `note-mcp.example.com`） |
+| `Origin`ヘッダー | 付いているリクエスト（ブラウザのWebページ由来）は403 | `MCP_ALLOWED_ORIGINS`（カンマ区切り） |
+| Bearerトークン | 設定したときだけ要求（`Authorization: Bearer <token>`） | `MCP_HTTP_TOKEN` |
+
+`MCP_HTTP_HOST`をループバック以外（`0.0.0.0`など）にする場合と、`MCP_ALLOWED_HOSTS`を使う場合は、`MCP_HTTP_TOKEN`が必須です。設定がないと起動しません。
+
+```bash
+# トークンの作り方の例
+openssl rand -hex 32
+```
+
+n8nやObsidianプラグインなど、ブラウザ以外のクライアントから`127.0.0.1`に接続する使い方は、設定を変えずにそのまま動きます。
+
 ## ✨ 主な機能
 
 | カテゴリ | 機能 | 認証 |
@@ -239,14 +258,18 @@ HTTP Connection Timeout: 60000
 
 ## 🌐 リモートアクセス（Cloudflare Tunnel）
 
-VPSでn8nを使用する場合、Cloudflare Tunnelで安全に接続できます：
+VPSでn8nを使用する場合、Cloudflare Tunnel経由で接続できます。トンネルのURLを知っている人は誰でもリクエストを送れるので、**必ず`MCP_HTTP_TOKEN`を設定してください**（v2.2.0以降、未設定では外部のホスト名からのリクエストを受け付けません）。
 
 ```bash
 # 1. Cloudflare Tunnelを設定
 cloudflared tunnel run note-mcp
 
-# 2. n8nでHTTPS URLを設定
+# 2. サーバーを起動（トークンと、トンネルのホスト名を指定）
+MCP_HTTP_TOKEN=<openssl rand -hex 32 の出力> MCP_ALLOWED_HOSTS=your-domain.com npm run start:http
+
+# 3. n8nでHTTPS URLとヘッダーを設定
 # HTTPS Stream URL: https://your-domain.com/mcp
+# Header: Authorization: Bearer <同じトークン>
 ```
 
 ## 🔐 認証フロー
